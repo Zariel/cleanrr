@@ -11,7 +11,7 @@ use url::Url;
 const DEFAULT_CONFIG_PATH: &str = "cleanrr.toml";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub listen_addr: SocketAddr,
     #[serde(with = "humantime_serde")]
@@ -53,6 +53,7 @@ impl ServerKind {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub kind: ServerKind,
     pub url: Url,
@@ -132,6 +133,11 @@ impl Config {
                     "servers.{name}.url must include a host"
                 )));
             }
+            if !server.url.username().is_empty() || server.url.password().is_some() {
+                return Err(ConfigError::Invalid(format!(
+                    "servers.{name}.url must not include credentials"
+                )));
+            }
         }
 
         Ok(())
@@ -169,6 +175,49 @@ mod tests {
         let mut config = valid_config();
         config.servers.get_mut("movies").unwrap().url = Url::parse("ftp://radarr.example").unwrap();
         assert!(matches!(config.validate(), Err(ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn rejects_server_url_credentials() {
+        let mut config = valid_config();
+        config.servers.get_mut("movies").unwrap().url =
+            Url::parse("https://user:password@radarr.example").unwrap();
+        assert!(matches!(config.validate(), Err(ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn rejects_unknown_top_level_toml_key() {
+        let result = Figment::from(Serialized::defaults(Config::default()))
+            .merge(Toml::string(
+                r#"
+                dryrun = true
+
+                [servers.movies]
+                kind = "radarr"
+                url = "http://radarr:7878"
+                api_key = "secret"
+                "#,
+            ))
+            .extract::<Config>();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_server_toml_key() {
+        let result = Figment::from(Serialized::defaults(Config::default()))
+            .merge(Toml::string(
+                r#"
+                [servers.movies]
+                kind = "radarr"
+                url = "http://radarr:7878"
+                api_key = "secret"
+                remove_from_client = false
+                "#,
+            ))
+            .extract::<Config>();
+
+        assert!(result.is_err());
     }
 
     #[test]
