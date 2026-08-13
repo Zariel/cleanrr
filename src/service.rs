@@ -61,7 +61,12 @@ pub async fn run_cleaner(
             _ = cancellation.cancelled() => break,
             _ = interval.tick() => {
                 let started = Instant::now();
-                match poll_once(&client, &name, kind, &policy, &metrics).await {
+                let result = tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => break,
+                    result = poll_once(&client, &name, kind, &policy, &metrics) => result,
+                };
+                match result {
                     Ok(()) => {
                         metrics.record_poll(&name, kind, "success", started.elapsed());
                         metrics.record_poll_success(&name, kind, Utc::now().timestamp());
@@ -95,12 +100,7 @@ async fn poll_once(
     );
 
     let now = Utc::now();
-    let mut candidate_ids = HashSet::new();
-    let candidates: Vec<_> = items
-        .iter()
-        .filter(|item| is_candidate(item, now, policy))
-        .filter(|item| candidate_ids.insert(item.id))
-        .collect();
+    let candidates = cleanup_candidates(&items, now, policy);
     metrics.add_matches(server, kind, candidates.len());
 
     for item in candidates {
@@ -169,10 +169,37 @@ fn is_candidate(item: &QueueItem, now: DateTime<Utc>, policy: &CleanupPolicy) ->
     true
 }
 
+fn cleanup_candidates<'a>(
+    items: &'a [QueueItem],
+    now: DateTime<Utc>,
+    policy: &CleanupPolicy,
+) -> Vec<&'a QueueItem> {
+    let mut downloads = HashSet::new();
+    items
+        .iter()
+        .filter(|item| is_candidate(item, now, policy))
+        .filter(|item| downloads.insert(candidate_key(item)))
+        .collect()
+}
+
+fn candidate_key(item: &QueueItem) -> String {
+    item.download_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .map(|id| format!("download:{}", id.to_ascii_lowercase()))
+        .unwrap_or_else(|| format!("queue:{}", item.id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{ServerConfig, ServerKind};
+    use axum::{Json, Router, extract::State, routing::get};
     use chrono::TimeDelta;
+    use serde_json::Value;
+    use std::{collections::BTreeMap, future::pending, sync::Arc};
+    use tokio::{net::TcpListener, sync::Notify};
+    use url::Url;
 
     fn policy() -> CleanupPolicy {
         CleanupPolicy {
@@ -186,6 +213,7 @@ mod tests {
         QueueItem {
             id: 1,
             title: Some("release".to_owned()),
+            download_id: Some("download-1".to_owned()),
             added: Some(now - TimeDelta::minutes(31)),
             tracked_download_state: Some("importBlocked".to_owned()),
         }
@@ -211,5 +239,65 @@ mod tests {
         let mut item = item(now);
         item.tracked_download_state = Some("downloading".to_owned());
         assert!(!is_candidate(&item, now, &policy()));
+    }
+
+    #[test]
+    fn deduplicates_sonarr_episode_rows_by_download() {
+        let now = Utc::now();
+        let first = item(now);
+        let mut second = item(now);
+        second.id = 2;
+        second.title = Some("another episode".to_owned());
+        second.download_id = Some("DOWNLOAD-1".to_owned());
+
+        let items = [first, second];
+        let candidates = cleanup_candidates(&items, now, &policy());
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].id, 1);
+    }
+
+    async fn hanging_queue(State(started): State<Arc<Notify>>) -> Json<Value> {
+        started.notify_one();
+        pending().await
+    }
+
+    #[tokio::test]
+    async fn cancellation_stops_an_active_poll() {
+        let started = Arc::new(Notify::new());
+        let app = Router::new()
+            .route("/api/v3/queue", get(hanging_queue))
+            .with_state(started.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let server = ServerConfig {
+            kind: ServerKind::Sonarr,
+            url: Url::parse(&format!("http://{address}")).unwrap(),
+            api_key: "secret".to_owned(),
+        };
+        let config = Config {
+            poll_interval: Duration::from_secs(3600),
+            servers: BTreeMap::from([("tv".to_owned(), server.clone())]),
+            ..Config::default()
+        };
+        let cancellation = CancellationToken::new();
+        let cleaner = tokio::spawn(run_cleaner(
+            "tv".to_owned(),
+            server,
+            config,
+            Metrics::new(),
+            cancellation.clone(),
+        ));
+
+        tokio::time::timeout(Duration::from_secs(1), started.notified())
+            .await
+            .expect("cleaner did not start polling");
+        cancellation.cancel();
+        tokio::time::timeout(Duration::from_millis(250), cleaner)
+            .await
+            .expect("cleaner did not stop promptly")
+            .expect("cleaner task failed");
     }
 }

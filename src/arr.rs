@@ -22,6 +22,7 @@ pub struct ArrClient {
 pub struct QueueItem {
     pub id: i64,
     pub title: Option<String>,
+    pub download_id: Option<String>,
     pub added: Option<DateTime<Utc>>,
     pub tracked_download_state: Option<String>,
 }
@@ -215,6 +216,7 @@ mod tests {
             vec![json!({
                 "id": 100,
                 "title": "candidate",
+                "downloadId": "download-100",
                 "added": "2026-01-01T00:00:00Z",
                 "trackedDownloadState": "importBlocked"
             })]
