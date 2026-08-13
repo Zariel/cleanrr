@@ -97,7 +97,7 @@ impl ArrClient {
                 .query(&[
                     ("page", page_number.to_string()),
                     ("pageSize", PAGE_SIZE.to_string()),
-                    ("sortKey", "id".to_owned()),
+                    ("sortKey", "added".to_owned()),
                     ("sortDirection", "ascending".to_owned()),
                 ])
                 .send()
@@ -203,6 +203,9 @@ mod tests {
     }
 
     async fn queue_handler(Query(query): Query<HashMap<String, String>>) -> Json<Value> {
+        assert_eq!(query["pageSize"], PAGE_SIZE.to_string());
+        assert_eq!(query["sortKey"], "added");
+        assert_eq!(query["sortDirection"], "ascending");
         let page: usize = query["page"].parse().unwrap();
         let records = if page == 1 {
             (0..100)
