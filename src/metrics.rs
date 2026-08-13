@@ -14,13 +14,11 @@ use prometheus_client::{
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct ServerLabels {
     server: String,
-    kind: String,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct ResultLabels {
     server: String,
-    kind: String,
     result: String,
 }
 
@@ -85,36 +83,36 @@ impl Metrics {
         }
     }
 
-    pub fn record_poll(&self, server: &str, kind: &str, result: &str, duration: Duration) {
+    pub fn record_poll(&self, server: &str, result: &str, duration: Duration) {
         self.polls
-            .get_or_create(&result_labels(server, kind, result))
+            .get_or_create(&result_labels(server, result))
             .inc();
         self.poll_duration
-            .get_or_create(&server_labels(server, kind))
+            .get_or_create(&server_labels(server))
             .observe(duration.as_secs_f64());
     }
 
-    pub fn record_poll_success(&self, server: &str, kind: &str, timestamp: i64) {
+    pub fn record_poll_success(&self, server: &str, timestamp: i64) {
         self.last_success
-            .get_or_create(&server_labels(server, kind))
+            .get_or_create(&server_labels(server))
             .set(timestamp);
     }
 
-    pub fn add_queue_items(&self, server: &str, kind: &str, count: usize) {
+    pub fn add_queue_items(&self, server: &str, count: usize) {
         self.queue_items
-            .get_or_create(&server_labels(server, kind))
+            .get_or_create(&server_labels(server))
             .inc_by(count as u64);
     }
 
-    pub fn add_matches(&self, server: &str, kind: &str, count: usize) {
+    pub fn add_matches(&self, server: &str, count: usize) {
         self.matches
-            .get_or_create(&server_labels(server, kind))
+            .get_or_create(&server_labels(server))
             .inc_by(count as u64);
     }
 
-    pub fn record_removal(&self, server: &str, kind: &str, result: &str) {
+    pub fn record_removal(&self, server: &str, result: &str) {
         self.removals
-            .get_or_create(&result_labels(server, kind, result))
+            .get_or_create(&result_labels(server, result))
             .inc();
     }
 
@@ -131,17 +129,15 @@ impl Default for Metrics {
     }
 }
 
-fn server_labels(server: &str, kind: &str) -> ServerLabels {
+fn server_labels(server: &str) -> ServerLabels {
     ServerLabels {
         server: server.to_owned(),
-        kind: kind.to_owned(),
     }
 }
 
-fn result_labels(server: &str, kind: &str, result: &str) -> ResultLabels {
+fn result_labels(server: &str, result: &str) -> ResultLabels {
     ResultLabels {
         server: server.to_owned(),
-        kind: kind.to_owned(),
         result: result.to_owned(),
     }
 }
@@ -153,16 +149,16 @@ mod tests {
     #[test]
     fn exposes_prometheus_metrics() {
         let metrics = Metrics::new();
-        metrics.record_poll("movies", "radarr", "success", Duration::from_millis(10));
-        metrics.add_queue_items("movies", "radarr", 3);
-        metrics.add_matches("movies", "radarr", 1);
-        metrics.record_removal("movies", "radarr", "removed");
-        metrics.record_poll_success("movies", "radarr", 123);
+        metrics.record_poll("movies", "success", Duration::from_millis(10));
+        metrics.add_queue_items("movies", 3);
+        metrics.add_matches("movies", 1);
+        metrics.record_removal("movies", "removed");
+        metrics.record_poll_success("movies", 123);
 
         let output = metrics.encode().unwrap();
         assert!(output.contains("cleanrr_polls_total"));
         assert!(output.contains("server=\"movies\""));
-        assert!(output.contains("kind=\"radarr\""));
+        assert!(!output.contains("kind="));
         assert!(output.contains("cleanrr_last_success_unixtime"));
     }
 }

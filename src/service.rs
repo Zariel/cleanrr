@@ -35,13 +35,11 @@ pub async fn run_cleaner(
     metrics: Metrics,
     cancellation: CancellationToken,
 ) {
-    let kind = server.kind.as_str();
     let client = match ArrClient::new(&server, Duration::from_secs(15)) {
         Ok(client) => client,
         Err(error) => {
             error!(
                 server = %name,
-                kind,
                 error = %format_error_chain(&error),
                 "failed to create Arr client"
             );
@@ -54,7 +52,6 @@ pub async fn run_cleaner(
 
     info!(
         server = %name,
-        kind,
         url = %server.url,
         dry_run = policy.dry_run,
         remove_from_client = policy.remove_from_client,
@@ -69,18 +66,17 @@ pub async fn run_cleaner(
                 let result = tokio::select! {
                     biased;
                     _ = cancellation.cancelled() => break,
-                    result = poll_once(&client, &name, kind, &policy, &metrics) => result,
+                    result = poll_once(&client, &name, &policy, &metrics) => result,
                 };
                 match result {
                     Ok(()) => {
-                        metrics.record_poll(&name, kind, "success", started.elapsed());
-                        metrics.record_poll_success(&name, kind, Utc::now().timestamp());
+                        metrics.record_poll(&name, "success", started.elapsed());
+                        metrics.record_poll_success(&name, Utc::now().timestamp());
                     }
                     Err(error) => {
-                        metrics.record_poll(&name, kind, "error", started.elapsed());
+                        metrics.record_poll(&name, "error", started.elapsed());
                         error!(
                             server = %name,
-                            kind,
                             error = %format_error_chain(&error),
                             "queue poll failed"
                         );
@@ -90,40 +86,28 @@ pub async fn run_cleaner(
         }
     }
 
-    info!(server = %name, kind, "cleaner stopped");
+    info!(server = %name, "cleaner stopped");
 }
 
 async fn poll_once(
     client: &ArrClient,
     server: &str,
-    kind: &str,
     policy: &CleanupPolicy,
     metrics: &Metrics,
 ) -> Result<(), ArrError> {
     let items = client.queue().await?;
-    metrics.add_queue_items(server, kind, items.len());
-    debug!(
-        server,
-        kind,
-        queue_items = items.len(),
-        "queue poll completed"
-    );
+    metrics.add_queue_items(server, items.len());
+    debug!(server, queue_items = items.len(), "queue poll completed");
 
     let now = Utc::now();
     let candidates = cleanup_candidates(&items, now, policy);
-    metrics.add_matches(server, kind, candidates.len());
+    metrics.add_matches(server, candidates.len());
 
     for item in candidates {
         let title = item.title.as_deref().unwrap_or("<unknown>");
         if policy.dry_run {
-            info!(
-                server,
-                kind,
-                queue_id = item.id,
-                title,
-                "would remove queue item"
-            );
-            metrics.record_removal(server, kind, "dry_run");
+            info!(server, queue_id = item.id, title, "would remove queue item");
+            metrics.record_removal(server, "dry_run");
             continue;
         }
 
@@ -132,35 +116,22 @@ async fn poll_once(
             .await
         {
             Ok(DeleteOutcome::Removed) => {
-                info!(
-                    server,
-                    kind,
-                    queue_id = item.id,
-                    title,
-                    "removed queue item"
-                );
-                metrics.record_removal(server, kind, "removed");
+                info!(server, queue_id = item.id, title, "removed queue item");
+                metrics.record_removal(server, "removed");
             }
             Ok(DeleteOutcome::AlreadyGone) => {
-                debug!(
-                    server,
-                    kind,
-                    queue_id = item.id,
-                    title,
-                    "queue item already gone"
-                );
-                metrics.record_removal(server, kind, "already_gone");
+                debug!(server, queue_id = item.id, title, "queue item already gone");
+                metrics.record_removal(server, "already_gone");
             }
             Err(error) => {
                 warn!(
                     server,
-                    kind,
                     queue_id = item.id,
                     title,
                     error = %format_error_chain(&error),
                     "failed to remove queue item"
                 );
-                metrics.record_removal(server, kind, "error");
+                metrics.record_removal(server, "error");
             }
         }
     }
@@ -226,7 +197,7 @@ fn candidate_key(item: &QueueItem) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ServerConfig, ServerKind};
+    use crate::config::ServerConfig;
     use axum::{Json, Router, extract::State, routing::get};
     use chrono::TimeDelta;
     use serde_json::Value;
@@ -306,7 +277,6 @@ mod tests {
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
         let server = ServerConfig {
-            kind: ServerKind::Sonarr,
             url: Url::parse(&format!("http://{address}")).unwrap(),
             api_key: "secret".to_owned(),
         };

@@ -36,26 +36,9 @@ impl Default for Config {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ServerKind {
-    Radarr,
-    Sonarr,
-}
-
-impl ServerKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Radarr => "radarr",
-            Self::Sonarr => "sonarr",
-        }
-    }
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
-    pub kind: ServerKind,
     pub url: Url,
     pub api_key: String,
 }
@@ -153,7 +136,6 @@ mod tests {
             servers: BTreeMap::from([(
                 "movies".to_owned(),
                 ServerConfig {
-                    kind: ServerKind::Radarr,
                     url: Url::parse("http://radarr:7878").unwrap(),
                     api_key: "secret".to_owned(),
                 },
@@ -193,7 +175,6 @@ mod tests {
                 dryrun = true
 
                 [servers.movies]
-                kind = "radarr"
                 url = "http://radarr:7878"
                 api_key = "secret"
                 "#,
@@ -209,7 +190,6 @@ mod tests {
             .merge(Toml::string(
                 r#"
                 [servers.movies]
-                kind = "radarr"
                 url = "http://radarr:7878"
                 api_key = "secret"
                 remove_from_client = false
@@ -229,7 +209,6 @@ mod tests {
                 minimum_age = "2h"
 
                 [servers.tv]
-                kind = "sonarr"
                 url = "https://sonarr.example/base/"
                 api_key = "secret"
                 "#,
@@ -239,6 +218,25 @@ mod tests {
 
         assert_eq!(config.poll_interval, Duration::from_secs(300));
         assert_eq!(config.minimum_age, Duration::from_secs(7200));
-        assert_eq!(config.servers["tv"].kind, ServerKind::Sonarr);
+        assert_eq!(
+            config.servers["tv"].url,
+            Url::parse("https://sonarr.example/base/").unwrap()
+        );
+    }
+
+    #[test]
+    fn rejects_removed_server_kind() {
+        let result = Figment::from(Serialized::defaults(Config::default()))
+            .merge(Toml::string(
+                r#"
+                [servers.movies]
+                kind = "radarr"
+                url = "http://radarr:7878"
+                api_key = "secret"
+                "#,
+            ))
+            .extract::<Config>();
+
+        assert!(result.is_err());
     }
 }

@@ -41,12 +41,10 @@ least one server:
 minimum_age = "30m"
 
 [servers.movies]
-kind = "radarr"
 url = "http://radarr:7878"
 api_key = "replace-me"
 
 [servers.tv]
-kind = "sonarr"
 url = "http://sonarr:8989"
 api_key = "replace-me"
 ```
@@ -67,7 +65,10 @@ CLEANRR_SERVERS__MOVIES__API_KEY=secret
 
 This makes it possible to mount ordinary configuration in a ConfigMap and
 override API keys from Secrets. Server names are arbitrary, so multiple
-Radarr or Sonarr instances are supported.
+Radarr or Sonarr instances are supported. No server type is configured:
+cleanrr uses the shared Arr v3 queue API convention for every server. Remove
+the former `kind` field or `__KIND` environment variable from existing
+configurations.
 
 The main settings are:
 
@@ -125,8 +126,7 @@ logs and metrics but does not make cleanrr unready or cause a restart loop.
 
 Metrics include poll outcomes and duration, inspected queue-row counts,
 matched underlying-download counts, removal outcomes, and the last successful
-poll timestamp. The `server` and `kind` labels identify the configured
-instance.
+poll timestamp. The `server` label identifies the configured instance.
 
 ## Development
 

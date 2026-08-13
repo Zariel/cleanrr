@@ -8,12 +8,11 @@ dry_run = false
 # download client or blocklisting the release.
 remove_from_client = false
 # Table names are arbitrary instance names and become Prometheus labels.
+# Radarr and Sonarr both use the same Arr v3 queue API, so no type is needed.
 [servers.movies]
-kind = "radarr"
 url = "http://radarr:7878"
 api_key = "replace-me"
 
 [servers.tv]
-kind = "sonarr"
 url = "http://sonarr:8989"
 api_key = "replace-me"

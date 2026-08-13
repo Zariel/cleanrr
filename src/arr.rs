@@ -251,7 +251,6 @@ mod tests {
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
         let server = ServerConfig {
-            kind: crate::config::ServerKind::Radarr,
             url: Url::parse(&format!("http://{address}/base")).unwrap(),
             api_key: "test-secret".to_owned(),
         };
