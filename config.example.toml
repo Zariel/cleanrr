@@ -2,23 +2,11 @@
 listen_addr = "0.0.0.0:8080"
 poll_interval = "1m"
 minimum_age = "30m"
-request_timeout = "15s"
-shutdown_timeout = "10s"
 dry_run = false
 
 # Safe defaults: tell Arr to forget the queue item without touching the
 # download client or blocklisting the release.
 remove_from_client = false
-blocklist = false
-
-log_filter = "cleanrr=info"
-log_format = "json"
-
-match_patterns = [
-  "not an upgrade for existing",
-  "not a custom format upgrade for existing",
-]
-
 # Table names are arbitrary instance names and become Prometheus labels.
 [servers.movies]
 kind = "radarr"
@@ -29,4 +17,3 @@ api_key = "replace-me"
 kind = "sonarr"
 url = "http://sonarr:8989"
 api_key = "replace-me"
-

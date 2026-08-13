@@ -18,16 +18,8 @@ pub struct Config {
     pub poll_interval: Duration,
     #[serde(with = "humantime_serde")]
     pub minimum_age: Duration,
-    #[serde(with = "humantime_serde")]
-    pub request_timeout: Duration,
-    #[serde(with = "humantime_serde")]
-    pub shutdown_timeout: Duration,
     pub dry_run: bool,
     pub remove_from_client: bool,
-    pub blocklist: bool,
-    pub log_filter: String,
-    pub log_format: LogFormat,
-    pub match_patterns: Vec<String>,
     pub servers: BTreeMap<String, ServerConfig>,
 }
 
@@ -37,28 +29,11 @@ impl Default for Config {
             listen_addr: "0.0.0.0:8080".parse().expect("default address is valid"),
             poll_interval: Duration::from_secs(60),
             minimum_age: Duration::from_secs(30 * 60),
-            request_timeout: Duration::from_secs(15),
-            shutdown_timeout: Duration::from_secs(10),
             dry_run: false,
             remove_from_client: false,
-            blocklist: false,
-            log_filter: "cleanrr=info".to_owned(),
-            log_format: LogFormat::Json,
-            match_patterns: vec![
-                "not an upgrade for existing".to_owned(),
-                "not a custom format upgrade for existing".to_owned(),
-            ],
             servers: BTreeMap::new(),
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum LogFormat {
-    Pretty,
-    #[default]
-    Json,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -131,28 +106,11 @@ impl Config {
                 "poll_interval must be greater than zero".to_owned(),
             ));
         }
-        if self.request_timeout.is_zero() {
-            return Err(ConfigError::Invalid(
-                "request_timeout must be greater than zero".to_owned(),
-            ));
-        }
-        if self.shutdown_timeout.is_zero() {
-            return Err(ConfigError::Invalid(
-                "shutdown_timeout must be greater than zero".to_owned(),
-            ));
-        }
         if self.servers.is_empty() {
             return Err(ConfigError::Invalid(
                 "at least one [servers.<name>] entry is required".to_owned(),
             ));
         }
-        if self.match_patterns.is_empty() || self.match_patterns.iter().any(|p| p.trim().is_empty())
-        {
-            return Err(ConfigError::Invalid(
-                "match_patterns must contain only non-empty values".to_owned(),
-            ));
-        }
-
         for (name, server) in &self.servers {
             if name.trim().is_empty() {
                 return Err(ConfigError::Invalid(
@@ -203,14 +161,7 @@ mod tests {
         let config = valid_config();
         config.validate().unwrap();
         assert!(!config.remove_from_client);
-        assert!(!config.blocklist);
         assert!(!config.dry_run);
-        assert!(
-            config
-                .match_patterns
-                .iter()
-                .any(|p| p.contains("not an upgrade"))
-        );
     }
 
     #[test]

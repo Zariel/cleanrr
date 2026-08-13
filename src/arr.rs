@@ -24,14 +24,6 @@ pub struct QueueItem {
     pub title: Option<String>,
     pub added: Option<DateTime<Utc>>,
     pub tracked_download_state: Option<String>,
-    #[serde(default, deserialize_with = "null_default")]
-    pub status_messages: Vec<StatusMessage>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct StatusMessage {
-    #[serde(default, deserialize_with = "null_default")]
-    pub messages: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -146,7 +138,6 @@ impl ArrClient {
         &self,
         id: i64,
         remove_from_client: bool,
-        blocklist: bool,
     ) -> Result<DeleteOutcome, ArrError> {
         let url = self.base_url.join(&format!("api/v3/queue/{id}"))?;
         let response = self
@@ -155,7 +146,7 @@ impl ArrClient {
             .header("X-Api-Key", &self.api_key)
             .query(&[
                 ("removeFromClient", remove_from_client),
-                ("blocklist", blocklist),
+                ("blocklist", false),
                 ("skipRedownload", false),
                 ("changeCategory", false),
             ])
@@ -191,14 +182,6 @@ async fn http_error(operation: &'static str, response: reqwest::Response) -> Arr
     }
 }
 
-fn null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Deserialize<'de> + Default,
-{
-    Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,8 +213,7 @@ mod tests {
                 "id": 100,
                 "title": "candidate",
                 "added": "2026-01-01T00:00:00Z",
-                "trackedDownloadState": "importBlocked",
-                "statusMessages": [{"messages": ["Not an upgrade for existing movie file(s)"]}]
+                "trackedDownloadState": "importBlocked"
             })]
         };
         Json(json!({"totalRecords": 101, "records": records}))
@@ -286,7 +268,7 @@ mod tests {
     async fn deletion_makes_all_safety_parameters_explicit() {
         let (client, state) = test_client().await;
         assert_eq!(
-            client.delete_queue_item(42, false, false).await.unwrap(),
+            client.delete_queue_item(42, false).await.unwrap(),
             DeleteOutcome::Removed
         );
         let deletes = state.deletes.lock().await;

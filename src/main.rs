@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
 use cleanrr::{
-    config::{Config, LogFormat},
+    config::Config,
     metrics::Metrics,
     service::run_cleaner,
     web::{HealthState, router},
@@ -25,7 +25,7 @@ async fn main() -> ExitCode {
 
 async fn run() -> Result<()> {
     let config = Config::load()?;
-    init_logging(&config)?;
+    init_logging();
 
     let listener = TcpListener::bind(config.listen_addr)
         .await
@@ -91,11 +91,12 @@ async fn run() -> Result<()> {
         Result::<()>::Ok(())
     };
 
-    match tokio::time::timeout(config.shutdown_timeout, drain).await {
+    const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+    match tokio::time::timeout(SHUTDOWN_TIMEOUT, drain).await {
         Ok(result) => result?,
         Err(_) => bail!(
             "graceful shutdown exceeded {} seconds",
-            config.shutdown_timeout.as_secs_f64()
+            SHUTDOWN_TIMEOUT.as_secs_f64()
         ),
     }
 
@@ -104,19 +105,13 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
-fn init_logging(config: &Config) -> Result<()> {
-    let filter = EnvFilter::try_new(&config.log_filter).context("invalid log_filter")?;
-    match config.log_format {
-        LogFormat::Pretty => tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .compact()
-            .init(),
-        LogFormat::Json => tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .json()
-            .init(),
-    }
-    Ok(())
+fn init_logging() {
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("cleanrr=info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .json()
+        .init();
 }
 
 async fn shutdown_signal() -> Result<()> {

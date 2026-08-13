@@ -17,13 +17,13 @@ An item is eligible only when all of these are true:
 1. Arr reports `trackedDownloadState = importBlocked`.
 2. The item has been in the queue for at least `minimum_age`, based on the
    queue item's `added` timestamp.
-3. One of its status messages contains a configured `match_patterns` value,
-   case-insensitively.
 
-The default patterns cover both the normal quality-upgrade and custom-format
-upgrade messages. Items with a missing timestamp, another import error, or a
-future timestamp are left untouched. Queue removals are idempotent; an item
-that disappears between polling and deletion is treated as already handled.
+Cleanrr intentionally treats Arr's typed `importBlocked` state as the source
+of truth instead of matching human-readable, localized error messages. The
+convention is that an import which remains blocked beyond `minimum_age` is
+stale and should leave the Arr queue. Items with a missing or future timestamp
+are left untouched. Queue removals are idempotent; an item that disappears
+between polling and deletion is treated as already handled.
 
 ## Configuration
 
@@ -69,17 +69,15 @@ The main settings are:
 | `listen_addr` | `0.0.0.0:8080` | Probe and metrics listener |
 | `poll_interval` | `1m` | Time between queue polls |
 | `minimum_age` | `30m` | Minimum queue residence time |
-| `request_timeout` | `15s` | Timeout for each Arr API request |
-| `shutdown_timeout` | `10s` | Maximum graceful drain time |
 | `dry_run` | `false` | Log candidates without removing them |
 | `remove_from_client` | `false` | Ask Arr to delete from the download client |
-| `blocklist` | `false` | Ask Arr to blocklist the release |
-| `log_format` | `json` | `json` or compact `pretty` logs |
-| `log_filter` | `cleanrr=info` | `tracing` filter directive |
 
-Start with `dry_run = true` when validating custom match patterns. Enabling
-`remove_from_client` can delete data or disrupt seeding depending on the Arr
-download-client configuration.
+Start with `dry_run = true` when validating the cleanup convention against
+your queues. Enabling `remove_from_client` can delete data or disrupt seeding
+depending on the Arr download-client configuration. API requests use a
+15-second timeout, graceful shutdown uses a 10-second deadline, blocklisting
+is always disabled, and logs are JSON. Set `RUST_LOG` to override the default
+`cleanrr=info` log filter.
 
 ## Running
 
@@ -99,7 +97,7 @@ docker run --rm -p 8080:8080 \
 
 The image runs as an unprivileged user (UID/GID `65532`) and handles SIGTERM
 as a graceful shutdown request. On shutdown, readiness fails immediately,
-in-flight HTTP requests drain, and pollers stop within `shutdown_timeout`.
+in-flight HTTP requests drain, and pollers stop within 10 seconds.
 
 ## Kubernetes probes and metrics
 

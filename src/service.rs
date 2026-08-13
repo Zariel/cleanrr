@@ -14,24 +14,16 @@ use crate::{
 #[derive(Clone)]
 struct CleanupPolicy {
     minimum_age: Duration,
-    match_patterns: Vec<String>,
     dry_run: bool,
     remove_from_client: bool,
-    blocklist: bool,
 }
 
 impl From<&Config> for CleanupPolicy {
     fn from(config: &Config) -> Self {
         Self {
             minimum_age: config.minimum_age,
-            match_patterns: config
-                .match_patterns
-                .iter()
-                .map(|pattern| pattern.to_lowercase())
-                .collect(),
             dry_run: config.dry_run,
             remove_from_client: config.remove_from_client,
-            blocklist: config.blocklist,
         }
     }
 }
@@ -44,7 +36,7 @@ pub async fn run_cleaner(
     cancellation: CancellationToken,
 ) {
     let kind = server.kind.as_str();
-    let client = match ArrClient::new(&server, config.request_timeout) {
+    let client = match ArrClient::new(&server, Duration::from_secs(15)) {
         Ok(client) => client,
         Err(error) => {
             error!(server = %name, kind, %error, "failed to create Arr client");
@@ -126,7 +118,7 @@ async fn poll_once(
         }
 
         match client
-            .delete_queue_item(item.id, policy.remove_from_client, policy.blocklist)
+            .delete_queue_item(item.id, policy.remove_from_client)
             .await
         {
             Ok(DeleteOutcome::Removed) => {
@@ -174,31 +166,19 @@ fn is_candidate(item: &QueueItem, now: DateTime<Utc>, policy: &CleanupPolicy) ->
         return false;
     }
 
-    item.status_messages
-        .iter()
-        .flat_map(|status| &status.messages)
-        .map(|message| message.to_lowercase())
-        .any(|message| {
-            policy
-                .match_patterns
-                .iter()
-                .any(|pattern| message.contains(pattern))
-        })
+    true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arr::StatusMessage;
     use chrono::TimeDelta;
 
     fn policy() -> CleanupPolicy {
         CleanupPolicy {
             minimum_age: Duration::from_secs(1800),
-            match_patterns: vec!["not an upgrade for existing".to_owned()],
             dry_run: false,
             remove_from_client: false,
-            blocklist: false,
         }
     }
 
@@ -208,14 +188,11 @@ mod tests {
             title: Some("release".to_owned()),
             added: Some(now - TimeDelta::minutes(31)),
             tracked_download_state: Some("importBlocked".to_owned()),
-            status_messages: vec![StatusMessage {
-                messages: vec!["Not an upgrade for existing episode file(s)".to_owned()],
-            }],
         }
     }
 
     #[test]
-    fn matches_old_blocked_non_upgrade() {
+    fn matches_old_blocked_import() {
         let now = Utc::now();
         assert!(is_candidate(&item(now), now, &policy()));
     }
@@ -225,15 +202,6 @@ mod tests {
         let now = Utc::now();
         let mut item = item(now);
         item.added = Some(now - TimeDelta::minutes(29));
-        assert!(!is_candidate(&item, now, &policy()));
-    }
-
-    #[test]
-    fn does_not_match_other_import_failure() {
-        let now = Utc::now();
-        let mut item = item(now);
-        item.status_messages[0].messages =
-            vec!["No files found are eligible for import".to_owned()];
         assert!(!is_candidate(&item, now, &policy()));
     }
 
