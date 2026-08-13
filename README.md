@@ -84,7 +84,9 @@ your queues. Enabling `remove_from_client` can delete data or disrupt seeding
 depending on the Arr download-client configuration. API requests use a
 15-second timeout, graceful shutdown uses a 10-second deadline, blocklisting
 is always disabled, and logs are JSON. Set `RUST_LOG` to override the default
-`cleanrr=info` log filter.
+`cleanrr=info` log filter. Request failures include the complete error chain,
+including underlying DNS, connection, and timeout causes where reqwest
+provides them.
 
 ## Running
 

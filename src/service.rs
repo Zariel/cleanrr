@@ -1,4 +1,4 @@
-use std::{collections::HashSet, time::Duration};
+use std::{collections::HashSet, error::Error, time::Duration};
 
 use chrono::{DateTime, Utc};
 use tokio::time::{Instant, MissedTickBehavior};
@@ -39,7 +39,12 @@ pub async fn run_cleaner(
     let client = match ArrClient::new(&server, Duration::from_secs(15)) {
         Ok(client) => client,
         Err(error) => {
-            error!(server = %name, kind, %error, "failed to create Arr client");
+            error!(
+                server = %name,
+                kind,
+                error = %format_error_chain(&error),
+                "failed to create Arr client"
+            );
             return;
         }
     };
@@ -73,7 +78,12 @@ pub async fn run_cleaner(
                     }
                     Err(error) => {
                         metrics.record_poll(&name, kind, "error", started.elapsed());
-                        error!(server = %name, kind, %error, "queue poll failed");
+                        error!(
+                            server = %name,
+                            kind,
+                            error = %format_error_chain(&error),
+                            "queue poll failed"
+                        );
                     }
                 }
             }
@@ -142,13 +152,36 @@ async fn poll_once(
                 metrics.record_removal(server, kind, "already_gone");
             }
             Err(error) => {
-                warn!(server, kind, queue_id = item.id, title, %error, "failed to remove queue item");
+                warn!(
+                    server,
+                    kind,
+                    queue_id = item.id,
+                    title,
+                    error = %format_error_chain(&error),
+                    "failed to remove queue item"
+                );
                 metrics.record_removal(server, kind, "error");
             }
         }
     }
 
     Ok(())
+}
+
+fn format_error_chain(error: &(dyn Error + 'static)) -> String {
+    let mut formatted = error.to_string();
+    let mut source = error.source();
+
+    while let Some(cause) = source {
+        let cause_text = cause.to_string();
+        if !formatted.ends_with(&cause_text) {
+            formatted.push_str(": ");
+            formatted.push_str(&cause_text);
+        }
+        source = cause.source();
+    }
+
+    formatted
 }
 
 fn is_candidate(item: &QueueItem, now: DateTime<Utc>, policy: &CleanupPolicy) -> bool {
@@ -299,5 +332,17 @@ mod tests {
             .await
             .expect("cleaner did not stop promptly")
             .expect("cleaner task failed");
+    }
+
+    #[test]
+    fn formats_the_complete_error_chain_without_duplicate_wrappers() {
+        let error = anyhow::Error::msg("DNS server timed out")
+            .context("could not resolve service")
+            .context("request failed");
+
+        assert_eq!(
+            format_error_chain(error.as_ref()),
+            "request failed: could not resolve service: DNS server timed out"
+        );
     }
 }
