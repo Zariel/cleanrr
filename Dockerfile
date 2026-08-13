@@ -11,7 +11,7 @@ FROM debian:bookworm-slim
 ARG VERSION=dev
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.title="cleanrr" \
-      org.opencontainers.image.description="Safely remove non-upgrade imports from Radarr and Sonarr queues" \
+      org.opencontainers.image.description="Safely remove stale blocked imports from Radarr and Sonarr queues" \
       org.opencontainers.image.source="https://github.com/Zariel/cleanrr" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.version="${VERSION}" \
@@ -29,4 +29,3 @@ USER 65532:65532
 EXPOSE 8080
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/local/bin/cleanrr"]
-

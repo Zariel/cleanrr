@@ -3,7 +3,7 @@ name = "cleanrr"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "Safely remove non-upgrade imports from Radarr and Sonarr queues"
+description = "Safely remove stale blocked imports from Radarr and Sonarr queues"
 repository = "https://github.com/Zariel/cleanrr"
 rust-version = "1.88"
 

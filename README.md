@@ -1,9 +1,10 @@
 # cleanrr
 
-`cleanrr` is a small, long-running service that removes completed downloads
-from Radarr and Sonarr queues when Arr refuses to import them because they are
-not upgrades. It is designed for Kubernetes and exposes health probes and
-Prometheus metrics from the same HTTP listener.
+`cleanrr` is a small, long-running service that removes stale, blocked imports
+from Radarr and Sonarr queues. Its primary use is clearing completed downloads
+that Arr refuses to import because they are not upgrades. It is designed for
+Kubernetes and exposes health probes and Prometheus metrics from the same HTTP
+listener.
 
 The default cleanup is deliberately conservative. It removes the item only
 from the Arr queue; it does not delete the download from the download client,
@@ -19,11 +20,17 @@ An item is eligible only when all of these are true:
    queue item's `added` timestamp.
 
 Cleanrr intentionally treats Arr's typed `importBlocked` state as the source
-of truth instead of matching human-readable, localized error messages. The
-convention is that an import which remains blocked beyond `minimum_age` is
-stale and should leave the Arr queue. Items with a missing or future timestamp
-are left untouched. Queue removals are idempotent; an item that disappears
-between polling and deletion is treated as already handled.
+of truth instead of matching human-readable, localized error messages. Arr
+does not expose a structured rejection reason, so this convention includes
+all `importBlocked` items, not only non-upgrades. Start in dry-run mode and
+confirm this policy fits your queues.
+
+`minimum_age` is the item's total residence time in the Arr queue, derived
+from Arr's `added` timestamp. It is not time measured from the first blocked
+poll, and cleanrr does not persist or reconcile local queue state. Items with
+a missing or future timestamp are left untouched. Queue removals are
+idempotent; an item that disappears between polling and deletion is treated
+as already handled.
 
 ## Configuration
 
@@ -114,9 +121,10 @@ Readiness means cleanrr has loaded and validated configuration, bound its HTTP
 listener, and started all pollers. An individual Arr outage is reported in
 logs and metrics but does not make cleanrr unready or cause a restart loop.
 
-Metrics include poll outcomes and duration, inspected and matched queue item
-counts, removal outcomes, and the last successful poll timestamp. The
-`server` and `kind` labels identify the configured instance.
+Metrics include poll outcomes and duration, inspected queue-row counts,
+matched underlying-download counts, removal outcomes, and the last successful
+poll timestamp. The `server` and `kind` labels identify the configured
+instance.
 
 ## Development
 
