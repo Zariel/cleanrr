@@ -1,6 +1,6 @@
 [package]
 name = "cleanrr"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "Safely remove stale blocked imports from Radarr and Sonarr queues"
