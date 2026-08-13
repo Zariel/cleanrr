@@ -1,0 +1,31 @@
+[package]
+name = "cleanrr"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Safely remove non-upgrade imports from Radarr and Sonarr queues"
+repository = "https://github.com/Zariel/cleanrr"
+rust-version = "1.88"
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+figment = { version = "0.10", features = ["env", "toml"] }
+humantime-serde = "1"
+prometheus-client = "0.24"
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = "0.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+url = { version = "2", features = ["serde"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+[profile.release]
+lto = "thin"
+strip = true
