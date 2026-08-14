@@ -11,6 +11,9 @@ use crate::{
     metrics::Metrics,
 };
 
+const SONARR_V4_NOT_CUSTOM_FORMAT_UPGRADE: &str =
+    "Not a Custom Format upgrade for existing episode file(s).";
+
 #[derive(Clone)]
 struct CleanupPolicy {
     minimum_age: Duration,
@@ -156,7 +159,7 @@ fn format_error_chain(error: &(dyn Error + 'static)) -> String {
 }
 
 fn is_candidate(item: &QueueItem, now: DateTime<Utc>, policy: &CleanupPolicy) -> bool {
-    if item.tracked_download_state.as_deref() != Some("importBlocked") {
+    if !has_cleanup_state(item) {
         return false;
     }
 
@@ -171,6 +174,25 @@ fn is_candidate(item: &QueueItem, now: DateTime<Utc>, policy: &CleanupPolicy) ->
     }
 
     true
+}
+
+fn has_cleanup_state(item: &QueueItem) -> bool {
+    if item.tracked_download_state.as_deref() == Some("importBlocked") {
+        return true;
+    }
+
+    // Sonarr v4 leaves this single rejected-import case in importPending. Keep
+    // the compatibility match narrow because importPending is otherwise a
+    // normal transient state and must not be treated as blocked.
+    item.status.as_deref() == Some("completed")
+        && item.tracked_download_status.as_deref() == Some("warning")
+        && item.tracked_download_state.as_deref() == Some("importPending")
+        && item.status_messages.iter().any(|status| {
+            status
+                .messages
+                .iter()
+                .any(|message| message.starts_with(SONARR_V4_NOT_CUSTOM_FORMAT_UPGRADE))
+        })
 }
 
 fn cleanup_candidates<'a>(
@@ -219,7 +241,10 @@ mod tests {
             title: Some("release".to_owned()),
             download_id: Some("download-1".to_owned()),
             added: Some(now - TimeDelta::minutes(31)),
+            status: Some("completed".to_owned()),
+            tracked_download_status: Some("warning".to_owned()),
             tracked_download_state: Some("importBlocked".to_owned()),
+            status_messages: Vec::new(),
         }
     }
 
@@ -242,6 +267,47 @@ mod tests {
         let now = Utc::now();
         let mut item = item(now);
         item.tracked_download_state = Some("downloading".to_owned());
+        assert!(!is_candidate(&item, now, &policy()));
+    }
+
+    #[test]
+    fn matches_sonarr_v4_custom_format_rejection() {
+        let now = Utc::now();
+        let mut item = item(now);
+        item.tracked_download_state = Some("importPending".to_owned());
+        item.status_messages = vec![crate::arr::QueueStatusMessage {
+            messages: vec![
+                "Not a Custom Format upgrade for existing episode file(s). New: [HDTV] (10) do not improve on Existing: [WEB] (20)"
+                    .to_owned(),
+            ],
+        }];
+
+        assert!(is_candidate(&item, now, &policy()));
+    }
+
+    #[test]
+    fn sonarr_v4_match_requires_every_typed_field_and_reason() {
+        let now = Utc::now();
+        let mut item = item(now);
+        item.tracked_download_state = Some("importPending".to_owned());
+        item.status_messages = vec![crate::arr::QueueStatusMessage {
+            messages: vec![SONARR_V4_NOT_CUSTOM_FORMAT_UPGRADE.to_owned()],
+        }];
+
+        item.tracked_download_state = Some("downloading".to_owned());
+        assert!(!is_candidate(&item, now, &policy()));
+        item.tracked_download_state = Some("importPending".to_owned());
+
+        item.status = Some("downloading".to_owned());
+        assert!(!is_candidate(&item, now, &policy()));
+        item.status = Some("completed".to_owned());
+
+        item.tracked_download_status = Some("ok".to_owned());
+        assert!(!is_candidate(&item, now, &policy()));
+        item.tracked_download_status = Some("warning".to_owned());
+
+        item.status_messages[0].messages =
+            vec!["No files found are eligible for import".to_owned()];
         assert!(!is_candidate(&item, now, &policy()));
     }
 

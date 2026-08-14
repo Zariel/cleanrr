@@ -24,7 +24,17 @@ pub struct QueueItem {
     pub title: Option<String>,
     pub download_id: Option<String>,
     pub added: Option<DateTime<Utc>>,
+    pub status: Option<String>,
+    pub tracked_download_status: Option<String>,
     pub tracked_download_state: Option<String>,
+    #[serde(default)]
+    pub status_messages: Vec<QueueStatusMessage>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct QueueStatusMessage {
+    #[serde(default)]
+    pub messages: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -218,7 +228,13 @@ mod tests {
                 "title": "candidate",
                 "downloadId": "download-100",
                 "added": "2026-01-01T00:00:00Z",
-                "trackedDownloadState": "importBlocked"
+                "status": "completed",
+                "trackedDownloadStatus": "warning",
+                "trackedDownloadState": "importBlocked",
+                "statusMessages": [{
+                    "title": "candidate.mkv",
+                    "messages": ["Not a Custom Format upgrade"]
+                }]
             })]
         };
         Json(json!({"totalRecords": 101, "records": records}))
@@ -266,6 +282,15 @@ mod tests {
         let items = client.queue().await.unwrap();
         assert_eq!(items.len(), 101);
         assert_eq!(items.last().unwrap().title.as_deref(), Some("candidate"));
+        assert_eq!(items.last().unwrap().status.as_deref(), Some("completed"));
+        assert_eq!(
+            items.last().unwrap().tracked_download_status.as_deref(),
+            Some("warning")
+        );
+        assert_eq!(
+            items.last().unwrap().status_messages[0].messages,
+            ["Not a Custom Format upgrade"]
+        );
     }
 
     #[tokio::test]

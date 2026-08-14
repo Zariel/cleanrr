@@ -13,17 +13,24 @@ automation remain responsible for torrent retention and seeding rules.
 
 ## Cleanup policy
 
-An item is eligible only when all of these are true:
+An item is eligible only when both of these are true:
 
-1. Arr reports `trackedDownloadState = importBlocked`.
+1. Arr reports `trackedDownloadState = importBlocked`, or the item matches the
+   Sonarr v4 compatibility signature described below.
 2. The item has been in the queue for at least `minimum_age`, based on the
    queue item's `added` timestamp.
 
 Cleanrr intentionally treats Arr's typed `importBlocked` state as the source
-of truth instead of matching human-readable, localized error messages. Arr
-does not expose a structured rejection reason, so this convention includes
-all `importBlocked` items, not only non-upgrades. Start in dry-run mode and
-confirm this policy fits your queues.
+of truth. Arr does not expose a structured rejection reason, so this
+convention includes all `importBlocked` items, not only non-upgrades.
+
+Sonarr v4 has one known exception: a single file rejected because it is not a
+Custom Format upgrade can remain in `importPending`. Cleanrr recognizes only
+the complete Sonarr v4 response signature: `status = completed`,
+`trackedDownloadStatus = warning`, `trackedDownloadState = importPending`, and
+a status message beginning `Not a Custom Format upgrade for existing episode
+file(s).`. Other `importPending` items remain untouched. Start in dry-run mode
+and confirm this policy fits your queues.
 
 `minimum_age` is the item's total residence time in the Arr queue, derived
 from Arr's `added` timestamp. It is not time measured from the first blocked
