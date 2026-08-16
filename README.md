@@ -111,7 +111,7 @@ mount:
 docker run --rm -p 8080:8080 \
   -v "$PWD/cleanrr.toml:/config/cleanrr.toml:ro" \
   -e CLEANRR_CONFIG=/config/cleanrr.toml \
-  ghcr.io/zariel/cleanrr:v0.1.3
+  ghcr.io/zariel/cleanrr:v0.1.4
 ```
 
 The image runs as an unprivileged user (UID/GID `65532`) and handles SIGTERM
