@@ -32,12 +32,14 @@ a status message beginning `Not a Custom Format upgrade for existing episode
 file(s).`. Other `importPending` items remain untouched. Start in dry-run mode
 and confirm this policy fits your queues.
 
-`minimum_age` is the item's total residence time in the Arr queue, derived
-from Arr's `added` timestamp. It is not time measured from the first blocked
-poll, and cleanrr does not persist or reconcile local queue state. Items with
-a missing or future timestamp are left untouched. Queue removals are
-idempotent; an item that disappears between polling and deletion is treated
-as already handled.
+`minimum_age` is the item's total residence time in the Arr queue when Arr
+provides an `added` timestamp. Sonarr can omit that field for tracked download
+rows; in that case cleanrr conservatively measures from the first blocked poll
+observed during the current process. This fallback state is not persisted, so
+a restart or the item disappearing from a successful poll resets the timer.
+Items with a future timestamp are left untouched. Queue removals are
+idempotent; an item that disappears between polling and deletion is treated as
+already handled.
 
 ## Configuration
 

@@ -1,4 +1,8 @@
-use std::{collections::HashSet, error::Error, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    error::Error,
+    time::Duration,
+};
 
 use chrono::{DateTime, Utc};
 use tokio::time::{Instant, MissedTickBehavior};
@@ -19,6 +23,60 @@ struct CleanupPolicy {
     minimum_age: Duration,
     dry_run: bool,
     remove_from_client: bool,
+}
+
+#[derive(Default)]
+struct CandidateTracker {
+    first_seen: HashMap<String, DateTime<Utc>>,
+}
+
+impl CandidateTracker {
+    fn candidates<'a>(
+        &mut self,
+        items: &'a [QueueItem],
+        now: DateTime<Utc>,
+        policy: &CleanupPolicy,
+    ) -> Vec<&'a QueueItem> {
+        let active_without_timestamp = items
+            .iter()
+            .filter(|item| has_cleanup_state(item) && item.added.is_none())
+            .map(candidate_key)
+            .collect::<HashSet<_>>();
+        self.first_seen
+            .retain(|key, _| active_without_timestamp.contains(key));
+
+        let mut downloads = HashSet::new();
+        let mut candidates = Vec::new();
+        for item in items {
+            if self.is_candidate(item, now, policy) {
+                let key = candidate_key(item);
+                if downloads.insert(key) {
+                    candidates.push(item);
+                }
+            }
+        }
+        candidates
+    }
+
+    fn is_candidate(
+        &mut self,
+        item: &QueueItem,
+        now: DateTime<Utc>,
+        policy: &CleanupPolicy,
+    ) -> bool {
+        if !has_cleanup_state(item) {
+            return false;
+        }
+
+        let eligible_since = item
+            .added
+            .unwrap_or_else(|| *self.first_seen.entry(candidate_key(item)).or_insert(now));
+        let Ok(age) = now.signed_duration_since(eligible_since).to_std() else {
+            return false;
+        };
+
+        age >= policy.minimum_age
+    }
 }
 
 impl From<&Config> for CleanupPolicy {
@@ -50,6 +108,7 @@ pub async fn run_cleaner(
         }
     };
     let policy = CleanupPolicy::from(&config);
+    let mut candidate_tracker = CandidateTracker::default();
     let mut interval = tokio::time::interval(config.poll_interval);
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
@@ -69,7 +128,13 @@ pub async fn run_cleaner(
                 let result = tokio::select! {
                     biased;
                     _ = cancellation.cancelled() => break,
-                    result = poll_once(&client, &name, &policy, &metrics) => result,
+                    result = poll_once(
+                        &client,
+                        &name,
+                        &policy,
+                        &metrics,
+                        &mut candidate_tracker,
+                    ) => result,
                 };
                 match result {
                     Ok(()) => {
@@ -97,13 +162,14 @@ async fn poll_once(
     server: &str,
     policy: &CleanupPolicy,
     metrics: &Metrics,
+    candidate_tracker: &mut CandidateTracker,
 ) -> Result<(), ArrError> {
     let items = client.queue().await?;
     metrics.add_queue_items(server, items.len());
     debug!(server, queue_items = items.len(), "queue poll completed");
 
     let now = Utc::now();
-    let candidates = cleanup_candidates(&items, now, policy);
+    let candidates = candidate_tracker.candidates(&items, now, policy);
     metrics.add_matches(server, candidates.len());
 
     for item in candidates {
@@ -158,24 +224,6 @@ fn format_error_chain(error: &(dyn Error + 'static)) -> String {
     formatted
 }
 
-fn is_candidate(item: &QueueItem, now: DateTime<Utc>, policy: &CleanupPolicy) -> bool {
-    if !has_cleanup_state(item) {
-        return false;
-    }
-
-    let Some(added) = item.added else {
-        return false;
-    };
-    let Ok(age) = now.signed_duration_since(added).to_std() else {
-        return false;
-    };
-    if age < policy.minimum_age {
-        return false;
-    }
-
-    true
-}
-
 fn has_cleanup_state(item: &QueueItem) -> bool {
     if item.tracked_download_state.as_deref() == Some("importBlocked") {
         return true;
@@ -193,19 +241,6 @@ fn has_cleanup_state(item: &QueueItem) -> bool {
                 .iter()
                 .any(|message| message.starts_with(SONARR_V4_NOT_CUSTOM_FORMAT_UPGRADE))
         })
-}
-
-fn cleanup_candidates<'a>(
-    items: &'a [QueueItem],
-    now: DateTime<Utc>,
-    policy: &CleanupPolicy,
-) -> Vec<&'a QueueItem> {
-    let mut downloads = HashSet::new();
-    items
-        .iter()
-        .filter(|item| is_candidate(item, now, policy))
-        .filter(|item| downloads.insert(candidate_key(item)))
-        .collect()
 }
 
 fn candidate_key(item: &QueueItem) -> String {
@@ -251,7 +286,9 @@ mod tests {
     #[test]
     fn matches_old_blocked_import() {
         let now = Utc::now();
-        assert!(is_candidate(&item(now), now, &policy()));
+        let items = [item(now)];
+        let candidates = CandidateTracker::default().candidates(&items, now, &policy());
+        assert_eq!(candidates.len(), 1);
     }
 
     #[test]
@@ -259,7 +296,9 @@ mod tests {
         let now = Utc::now();
         let mut item = item(now);
         item.added = Some(now - TimeDelta::minutes(29));
-        assert!(!is_candidate(&item, now, &policy()));
+        let items = [item];
+        let candidates = CandidateTracker::default().candidates(&items, now, &policy());
+        assert!(candidates.is_empty());
     }
 
     #[test]
@@ -267,7 +306,9 @@ mod tests {
         let now = Utc::now();
         let mut item = item(now);
         item.tracked_download_state = Some("downloading".to_owned());
-        assert!(!is_candidate(&item, now, &policy()));
+        let items = [item];
+        let candidates = CandidateTracker::default().candidates(&items, now, &policy());
+        assert!(candidates.is_empty());
     }
 
     #[test]
@@ -282,7 +323,9 @@ mod tests {
             ],
         }];
 
-        assert!(is_candidate(&item, now, &policy()));
+        let items = [item];
+        let candidates = CandidateTracker::default().candidates(&items, now, &policy());
+        assert_eq!(candidates.len(), 1);
     }
 
     #[test]
@@ -295,20 +338,33 @@ mod tests {
         }];
 
         item.tracked_download_state = Some("downloading".to_owned());
-        assert!(!is_candidate(&item, now, &policy()));
+        let mut tracker = CandidateTracker::default();
+        assert!(
+            tracker
+                .candidates(&[item.clone()], now, &policy())
+                .is_empty()
+        );
         item.tracked_download_state = Some("importPending".to_owned());
 
         item.status = Some("downloading".to_owned());
-        assert!(!is_candidate(&item, now, &policy()));
+        assert!(
+            tracker
+                .candidates(&[item.clone()], now, &policy())
+                .is_empty()
+        );
         item.status = Some("completed".to_owned());
 
         item.tracked_download_status = Some("ok".to_owned());
-        assert!(!is_candidate(&item, now, &policy()));
+        assert!(
+            tracker
+                .candidates(&[item.clone()], now, &policy())
+                .is_empty()
+        );
         item.tracked_download_status = Some("warning".to_owned());
 
         item.status_messages[0].messages =
             vec!["No files found are eligible for import".to_owned()];
-        assert!(!is_candidate(&item, now, &policy()));
+        assert!(tracker.candidates(&[item], now, &policy()).is_empty());
     }
 
     #[test]
@@ -321,10 +377,59 @@ mod tests {
         second.download_id = Some("DOWNLOAD-1".to_owned());
 
         let items = [first, second];
-        let candidates = cleanup_candidates(&items, now, &policy());
+        let candidates = CandidateTracker::default().candidates(&items, now, &policy());
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].id, 1);
+    }
+
+    #[test]
+    fn ages_missing_timestamps_from_first_observation() {
+        let now = Utc::now();
+        let mut item = item(now);
+        item.added = None;
+        let items = [item];
+        let mut tracker = CandidateTracker::default();
+
+        assert!(tracker.candidates(&items, now, &policy()).is_empty());
+        assert!(
+            tracker
+                .candidates(&items, now + TimeDelta::minutes(29), &policy())
+                .is_empty()
+        );
+        assert_eq!(
+            tracker
+                .candidates(&items, now + TimeDelta::minutes(30), &policy())
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn missing_timestamp_age_resets_after_disappearance() {
+        let now = Utc::now();
+        let mut item = item(now);
+        item.added = None;
+        let items = [item];
+        let mut tracker = CandidateTracker::default();
+
+        assert!(tracker.candidates(&items, now, &policy()).is_empty());
+        assert!(
+            tracker
+                .candidates(&[], now + TimeDelta::minutes(30), &policy())
+                .is_empty()
+        );
+        assert!(
+            tracker
+                .candidates(&items, now + TimeDelta::minutes(31), &policy())
+                .is_empty()
+        );
+        assert_eq!(
+            tracker
+                .candidates(&items, now + TimeDelta::minutes(61), &policy())
+                .len(),
+            1
+        );
     }
 
     async fn hanging_queue(State(started): State<Arc<Notify>>) -> Json<Value> {
