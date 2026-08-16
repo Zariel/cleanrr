@@ -27,7 +27,7 @@ struct CleanupPolicy {
 
 #[derive(Default)]
 struct CandidateTracker {
-    first_seen: HashMap<String, DateTime<Utc>>,
+    first_seen: HashMap<String, Instant>,
 }
 
 impl CandidateTracker {
@@ -35,11 +35,12 @@ impl CandidateTracker {
         &mut self,
         items: &'a [QueueItem],
         now: DateTime<Utc>,
+        observed_at: Instant,
         policy: &CleanupPolicy,
     ) -> Vec<&'a QueueItem> {
         let active_without_timestamp = items
             .iter()
-            .filter(|item| has_cleanup_state(item) && item.added.is_none())
+            .filter(|item| can_age_from_observation(item))
             .map(candidate_key)
             .collect::<HashSet<_>>();
         self.first_seen
@@ -48,7 +49,7 @@ impl CandidateTracker {
         let mut downloads = HashSet::new();
         let mut candidates = Vec::new();
         for item in items {
-            if self.is_candidate(item, now, policy) {
+            if self.is_candidate(item, now, observed_at, policy) {
                 let key = candidate_key(item);
                 if downloads.insert(key) {
                     candidates.push(item);
@@ -62,20 +63,35 @@ impl CandidateTracker {
         &mut self,
         item: &QueueItem,
         now: DateTime<Utc>,
+        observed_at: Instant,
         policy: &CleanupPolicy,
     ) -> bool {
         if !has_cleanup_state(item) {
             return false;
         }
 
-        let eligible_since = item
-            .added
-            .unwrap_or_else(|| *self.first_seen.entry(candidate_key(item)).or_insert(now));
-        let Ok(age) = now.signed_duration_since(eligible_since).to_std() else {
-            return false;
+        let age = match item.added {
+            Some(added) => {
+                let Ok(age) = now.signed_duration_since(added).to_std() else {
+                    return false;
+                };
+                age
+            }
+            None if can_age_from_observation(item) => {
+                let first_seen = self
+                    .first_seen
+                    .entry(candidate_key(item))
+                    .or_insert(observed_at);
+                observed_at.duration_since(*first_seen)
+            }
+            None => return false,
         };
 
         age >= policy.minimum_age
+    }
+
+    fn clear(&mut self) {
+        self.first_seen.clear();
     }
 }
 
@@ -142,6 +158,7 @@ pub async fn run_cleaner(
                         metrics.record_poll_success(&name, Utc::now().timestamp());
                     }
                     Err(error) => {
+                        candidate_tracker.clear();
                         metrics.record_poll(&name, "error", started.elapsed());
                         error!(
                             server = %name,
@@ -169,7 +186,7 @@ async fn poll_once(
     debug!(server, queue_items = items.len(), "queue poll completed");
 
     let now = Utc::now();
-    let candidates = candidate_tracker.candidates(&items, now, policy);
+    let candidates = candidate_tracker.candidates(&items, now, Instant::now(), policy);
     metrics.add_matches(server, candidates.len());
 
     for item in candidates {
@@ -243,6 +260,13 @@ fn has_cleanup_state(item: &QueueItem) -> bool {
         })
 }
 
+fn can_age_from_observation(item: &QueueItem) -> bool {
+    item.added.is_none()
+        && has_cleanup_state(item)
+        && item.status.as_deref() == Some("completed")
+        && item.tracked_download_status.as_deref() == Some("warning")
+}
+
 fn candidate_key(item: &QueueItem) -> String {
     item.download_id
         .as_deref()
@@ -287,7 +311,8 @@ mod tests {
     fn matches_old_blocked_import() {
         let now = Utc::now();
         let items = [item(now)];
-        let candidates = CandidateTracker::default().candidates(&items, now, &policy());
+        let candidates =
+            CandidateTracker::default().candidates(&items, now, Instant::now(), &policy());
         assert_eq!(candidates.len(), 1);
     }
 
@@ -297,7 +322,8 @@ mod tests {
         let mut item = item(now);
         item.added = Some(now - TimeDelta::minutes(29));
         let items = [item];
-        let candidates = CandidateTracker::default().candidates(&items, now, &policy());
+        let candidates =
+            CandidateTracker::default().candidates(&items, now, Instant::now(), &policy());
         assert!(candidates.is_empty());
     }
 
@@ -307,7 +333,8 @@ mod tests {
         let mut item = item(now);
         item.tracked_download_state = Some("downloading".to_owned());
         let items = [item];
-        let candidates = CandidateTracker::default().candidates(&items, now, &policy());
+        let candidates =
+            CandidateTracker::default().candidates(&items, now, Instant::now(), &policy());
         assert!(candidates.is_empty());
     }
 
@@ -324,7 +351,8 @@ mod tests {
         }];
 
         let items = [item];
-        let candidates = CandidateTracker::default().candidates(&items, now, &policy());
+        let candidates =
+            CandidateTracker::default().candidates(&items, now, Instant::now(), &policy());
         assert_eq!(candidates.len(), 1);
     }
 
@@ -341,7 +369,7 @@ mod tests {
         let mut tracker = CandidateTracker::default();
         assert!(
             tracker
-                .candidates(&[item.clone()], now, &policy())
+                .candidates(&[item.clone()], now, Instant::now(), &policy())
                 .is_empty()
         );
         item.tracked_download_state = Some("importPending".to_owned());
@@ -349,7 +377,7 @@ mod tests {
         item.status = Some("downloading".to_owned());
         assert!(
             tracker
-                .candidates(&[item.clone()], now, &policy())
+                .candidates(&[item.clone()], now, Instant::now(), &policy())
                 .is_empty()
         );
         item.status = Some("completed".to_owned());
@@ -357,14 +385,18 @@ mod tests {
         item.tracked_download_status = Some("ok".to_owned());
         assert!(
             tracker
-                .candidates(&[item.clone()], now, &policy())
+                .candidates(&[item.clone()], now, Instant::now(), &policy())
                 .is_empty()
         );
         item.tracked_download_status = Some("warning".to_owned());
 
         item.status_messages[0].messages =
             vec!["No files found are eligible for import".to_owned()];
-        assert!(tracker.candidates(&[item], now, &policy()).is_empty());
+        assert!(
+            tracker
+                .candidates(&[item], now, Instant::now(), &policy())
+                .is_empty()
+        );
     }
 
     #[test]
@@ -377,7 +409,8 @@ mod tests {
         second.download_id = Some("DOWNLOAD-1".to_owned());
 
         let items = [first, second];
-        let candidates = CandidateTracker::default().candidates(&items, now, &policy());
+        let candidates =
+            CandidateTracker::default().candidates(&items, now, Instant::now(), &policy());
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].id, 1);
@@ -390,16 +423,31 @@ mod tests {
         item.added = None;
         let items = [item];
         let mut tracker = CandidateTracker::default();
+        let observed_at = Instant::now();
 
-        assert!(tracker.candidates(&items, now, &policy()).is_empty());
         assert!(
             tracker
-                .candidates(&items, now + TimeDelta::minutes(29), &policy())
+                .candidates(&items, now, observed_at, &policy())
+                .is_empty()
+        );
+        assert!(
+            tracker
+                .candidates(
+                    &items,
+                    now + TimeDelta::minutes(29),
+                    observed_at + Duration::from_secs(29 * 60),
+                    &policy(),
+                )
                 .is_empty()
         );
         assert_eq!(
             tracker
-                .candidates(&items, now + TimeDelta::minutes(30), &policy())
+                .candidates(
+                    &items,
+                    now + TimeDelta::minutes(30),
+                    observed_at + Duration::from_secs(30 * 60),
+                    &policy(),
+                )
                 .len(),
             1
         );
@@ -412,21 +460,108 @@ mod tests {
         item.added = None;
         let items = [item];
         let mut tracker = CandidateTracker::default();
+        let observed_at = Instant::now();
 
-        assert!(tracker.candidates(&items, now, &policy()).is_empty());
         assert!(
             tracker
-                .candidates(&[], now + TimeDelta::minutes(30), &policy())
+                .candidates(&items, now, observed_at, &policy())
                 .is_empty()
         );
         assert!(
             tracker
-                .candidates(&items, now + TimeDelta::minutes(31), &policy())
+                .candidates(
+                    &[],
+                    now + TimeDelta::minutes(30),
+                    observed_at + Duration::from_secs(30 * 60),
+                    &policy(),
+                )
+                .is_empty()
+        );
+        assert!(
+            tracker
+                .candidates(
+                    &items,
+                    now + TimeDelta::minutes(31),
+                    observed_at + Duration::from_secs(31 * 60),
+                    &policy(),
+                )
                 .is_empty()
         );
         assert_eq!(
             tracker
-                .candidates(&items, now + TimeDelta::minutes(61), &policy())
+                .candidates(
+                    &items,
+                    now + TimeDelta::minutes(61),
+                    observed_at + Duration::from_secs(61 * 60),
+                    &policy(),
+                )
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn missing_timestamp_fallback_requires_completed_warning() {
+        let now = Utc::now();
+        let observed_at = Instant::now();
+        let mut item = item(now);
+        item.added = None;
+        item.status = Some("downloading".to_owned());
+        let mut tracker = CandidateTracker::default();
+
+        assert!(
+            tracker
+                .candidates(&[item.clone()], now, observed_at, &policy(),)
+                .is_empty()
+        );
+
+        item.status = Some("completed".to_owned());
+        item.tracked_download_status = Some("ok".to_owned());
+        assert!(
+            tracker
+                .candidates(
+                    &[item],
+                    now + TimeDelta::hours(1),
+                    observed_at + Duration::from_secs(3600),
+                    &policy(),
+                )
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn clearing_tracker_resets_missing_timestamp_age() {
+        let now = Utc::now();
+        let observed_at = Instant::now();
+        let mut item = item(now);
+        item.added = None;
+        let items = [item];
+        let mut tracker = CandidateTracker::default();
+
+        assert!(
+            tracker
+                .candidates(&items, now, observed_at, &policy())
+                .is_empty()
+        );
+        tracker.clear();
+        assert!(
+            tracker
+                .candidates(
+                    &items,
+                    now + TimeDelta::hours(12),
+                    observed_at + Duration::from_secs(30 * 60),
+                    &policy(),
+                )
+                .is_empty()
+        );
+        assert_eq!(
+            tracker
+                .candidates(
+                    &items,
+                    now + TimeDelta::hours(12),
+                    observed_at + Duration::from_secs(60 * 60),
+                    &policy(),
+                )
                 .len(),
             1
         );

@@ -34,12 +34,12 @@ and confirm this policy fits your queues.
 
 `minimum_age` is the item's total residence time in the Arr queue when Arr
 provides an `added` timestamp. Sonarr can omit that field for tracked download
-rows; in that case cleanrr conservatively measures from the first blocked poll
-observed during the current process. This fallback state is not persisted, so
-a restart or the item disappearing from a successful poll resets the timer.
-Items with a future timestamp are left untouched. Queue removals are
-idempotent; an item that disappears between polling and deletion is treated as
-already handled.
+rows; in that case cleanrr conservatively measures completed, warning rows
+from the first blocked poll observed during the current process. The fallback
+uses monotonic time and its state is not persisted. A failed poll, restart, or
+the item disappearing from a successful poll resets the timer. Items with a
+future timestamp are left untouched. Queue removals are idempotent; an item
+that disappears between polling and deletion is treated as already handled.
 
 ## Configuration
 
