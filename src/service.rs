@@ -17,6 +17,8 @@ use crate::{
 
 const SONARR_V4_NOT_CUSTOM_FORMAT_UPGRADE: &str =
     "Not a Custom Format upgrade for existing episode file(s).";
+const RADARR_NOT_CUSTOM_FORMAT_UPGRADE: &str =
+    "Not a Custom Format upgrade for existing movie file(s).";
 
 #[derive(Clone)]
 struct CleanupPolicy {
@@ -246,17 +248,17 @@ fn has_cleanup_state(item: &QueueItem) -> bool {
         return true;
     }
 
-    // Sonarr v4 leaves this single rejected-import case in importPending. Keep
+    // Arr can leave this single rejected-import case in importPending. Keep
     // the compatibility match narrow because importPending is otherwise a
     // normal transient state and must not be treated as blocked.
     item.status.as_deref() == Some("completed")
         && item.tracked_download_status.as_deref() == Some("warning")
         && item.tracked_download_state.as_deref() == Some("importPending")
         && item.status_messages.iter().any(|status| {
-            status
-                .messages
-                .iter()
-                .any(|message| message.starts_with(SONARR_V4_NOT_CUSTOM_FORMAT_UPGRADE))
+            status.messages.iter().any(|message| {
+                message.starts_with(SONARR_V4_NOT_CUSTOM_FORMAT_UPGRADE)
+                    || message.starts_with(RADARR_NOT_CUSTOM_FORMAT_UPGRADE)
+            })
         })
 }
 
@@ -346,6 +348,24 @@ mod tests {
         item.status_messages = vec![crate::arr::QueueStatusMessage {
             messages: vec![
                 "Not a Custom Format upgrade for existing episode file(s). New: [HDTV] (10) do not improve on Existing: [WEB] (20)"
+                    .to_owned(),
+            ],
+        }];
+
+        let items = [item];
+        let candidates =
+            CandidateTracker::default().candidates(&items, now, Instant::now(), &policy());
+        assert_eq!(candidates.len(), 1);
+    }
+
+    #[test]
+    fn matches_radarr_custom_format_rejection() {
+        let now = Utc::now();
+        let mut item = item(now);
+        item.tracked_download_state = Some("importPending".to_owned());
+        item.status_messages = vec![crate::arr::QueueStatusMessage {
+            messages: vec![
+                "Not a Custom Format upgrade for existing movie file(s). New: [WEB] (3475) do not improve on Existing: [WEB, HDR] (4975)"
                     .to_owned(),
             ],
         }];

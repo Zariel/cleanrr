@@ -15,8 +15,8 @@ automation remain responsible for torrent retention and seeding rules.
 
 An item is eligible only when both of these are true:
 
-1. Arr reports `trackedDownloadState = importBlocked`, or the item matches the
-   Sonarr v4 compatibility signature described below.
+1. Arr reports `trackedDownloadState = importBlocked`, or the item matches one
+   of the narrow `importPending` compatibility signatures described below.
 2. The item has been in the queue for at least `minimum_age`, based on the
    queue item's `added` timestamp.
 
@@ -24,12 +24,13 @@ Cleanrr intentionally treats Arr's typed `importBlocked` state as the source
 of truth. Arr does not expose a structured rejection reason, so this
 convention includes all `importBlocked` items, not only non-upgrades.
 
-Sonarr v4 has one known exception: a single file rejected because it is not a
-Custom Format upgrade can remain in `importPending`. Cleanrr recognizes only
-the complete Sonarr v4 response signature: `status = completed`,
+Sonarr v4 and Radarr have one known exception: a file rejected because it is
+not a Custom Format upgrade can remain in `importPending`. Cleanrr recognizes
+only the complete response signature: `status = completed`,
 `trackedDownloadStatus = warning`, `trackedDownloadState = importPending`, and
 a status message beginning `Not a Custom Format upgrade for existing episode
-file(s).`. Other `importPending` items remain untouched. Start in dry-run mode
+file(s).` (Sonarr) or `Not a Custom Format upgrade for existing movie file(s).`
+(Radarr). Other `importPending` items remain untouched. Start in dry-run mode
 and confirm this policy fits your queues.
 
 `minimum_age` is the item's total residence time in the Arr queue when Arr
@@ -111,7 +112,7 @@ mount:
 docker run --rm -p 8080:8080 \
   -v "$PWD/cleanrr.toml:/config/cleanrr.toml:ro" \
   -e CLEANRR_CONFIG=/config/cleanrr.toml \
-  ghcr.io/zariel/cleanrr:v0.1.5
+  ghcr.io/zariel/cleanrr:v0.1.6
 ```
 
 The image runs as an unprivileged user (UID/GID `65532`) and handles SIGTERM
