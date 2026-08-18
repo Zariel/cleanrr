@@ -5,7 +5,7 @@ edition = "2024"
 license = "MIT"
 description = "Safely remove stale blocked imports from Radarr and Sonarr queues"
 repository = "https://github.com/Zariel/cleanrr"
-rust-version = "1.88"
+rust-version = "1.99"
 
 [dependencies]
 anyhow = "1"
