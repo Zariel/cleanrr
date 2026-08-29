@@ -19,6 +19,8 @@ const SONARR_V4_NOT_CUSTOM_FORMAT_UPGRADE: &str =
     "Not a Custom Format upgrade for existing episode file(s).";
 const RADARR_NOT_CUSTOM_FORMAT_UPGRADE: &str =
     "Not a Custom Format upgrade for existing movie file(s).";
+const SONARR_V4_NOT_QUALITY_UPGRADE: &str = "Not an upgrade for existing episode file(s).";
+const RADARR_NOT_QUALITY_UPGRADE: &str = "Not an upgrade for existing movie file.";
 
 #[derive(Clone)]
 struct CleanupPolicy {
@@ -248,8 +250,8 @@ fn has_cleanup_state(item: &QueueItem) -> bool {
         return true;
     }
 
-    // Arr can leave this single rejected-import case in importPending. Keep
-    // the compatibility match narrow because importPending is otherwise a
+    // Arr can leave these rejected-import cases in importPending. Keep the
+    // compatibility match narrow because importPending is otherwise a
     // normal transient state and must not be treated as blocked.
     item.status.as_deref() == Some("completed")
         && item.tracked_download_status.as_deref() == Some("warning")
@@ -258,6 +260,8 @@ fn has_cleanup_state(item: &QueueItem) -> bool {
             status.messages.iter().any(|message| {
                 message.starts_with(SONARR_V4_NOT_CUSTOM_FORMAT_UPGRADE)
                     || message.starts_with(RADARR_NOT_CUSTOM_FORMAT_UPGRADE)
+                    || message.starts_with(SONARR_V4_NOT_QUALITY_UPGRADE)
+                    || message.starts_with(RADARR_NOT_QUALITY_UPGRADE)
             })
         })
 }
@@ -366,6 +370,42 @@ mod tests {
         item.status_messages = vec![crate::arr::QueueStatusMessage {
             messages: vec![
                 "Not a Custom Format upgrade for existing movie file(s). New: [WEB] (3475) do not improve on Existing: [WEB, HDR] (4975)"
+                    .to_owned(),
+            ],
+        }];
+
+        let items = [item];
+        let candidates =
+            CandidateTracker::default().candidates(&items, now, Instant::now(), &policy());
+        assert_eq!(candidates.len(), 1);
+    }
+
+    #[test]
+    fn matches_sonarr_v4_quality_rejection() {
+        let now = Utc::now();
+        let mut item = item(now);
+        item.tracked_download_state = Some("importPending".to_owned());
+        item.status_messages = vec![crate::arr::QueueStatusMessage {
+            messages: vec![
+                "Not an upgrade for existing episode file(s). Existing quality: WEBDL-2160p. New Quality WEBDL-1080p."
+                    .to_owned(),
+            ],
+        }];
+
+        let items = [item];
+        let candidates =
+            CandidateTracker::default().candidates(&items, now, Instant::now(), &policy());
+        assert_eq!(candidates.len(), 1);
+    }
+
+    #[test]
+    fn matches_radarr_quality_rejection() {
+        let now = Utc::now();
+        let mut item = item(now);
+        item.tracked_download_state = Some("importPending".to_owned());
+        item.status_messages = vec![crate::arr::QueueStatusMessage {
+            messages: vec![
+                "Not an upgrade for existing movie file. Existing quality: Bluray-1080p. New Quality WEBDL-720p."
                     .to_owned(),
             ],
         }];
