@@ -147,4 +147,14 @@ cargo test --all-targets
 cargo build --locked --release
 ```
 
+`Cargo.toml` defines the Rust version used by CI and container builds through
+`package.rust-version`. To build the container locally, pass that version as a
+build argument:
+
+```console
+docker build \
+  --build-arg RUST_VERSION="$(sed -n 's/^rust-version = "\([^"]*\)".*/\1/p' Cargo.toml)" \
+  -t cleanrr .
+```
+
 The project is licensed under the [MIT License](LICENSE).
