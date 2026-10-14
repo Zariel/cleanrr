@@ -15,11 +15,11 @@ use crate::{
     metrics::Metrics,
 };
 
-const SONARR_V4_NOT_CUSTOM_FORMAT_UPGRADE: &str =
+const SONARR_NOT_CUSTOM_FORMAT_UPGRADE: &str =
     "Not a Custom Format upgrade for existing episode file(s).";
 const RADARR_NOT_CUSTOM_FORMAT_UPGRADE: &str =
     "Not a Custom Format upgrade for existing movie file(s).";
-const SONARR_V4_NOT_QUALITY_UPGRADE: &str = "Not an upgrade for existing episode file(s).";
+const SONARR_NOT_QUALITY_UPGRADE: &str = "Not an upgrade for existing episode file(s).";
 const RADARR_NOT_QUALITY_UPGRADE: &str = "Not an upgrade for existing movie file.";
 
 #[derive(Clone)]
@@ -258,9 +258,9 @@ fn has_cleanup_state(item: &QueueItem) -> bool {
         && item.tracked_download_state.as_deref() == Some("importPending")
         && item.status_messages.iter().any(|status| {
             status.messages.iter().any(|message| {
-                message.starts_with(SONARR_V4_NOT_CUSTOM_FORMAT_UPGRADE)
+                message.starts_with(SONARR_NOT_CUSTOM_FORMAT_UPGRADE)
                     || message.starts_with(RADARR_NOT_CUSTOM_FORMAT_UPGRADE)
-                    || message.starts_with(SONARR_V4_NOT_QUALITY_UPGRADE)
+                    || message.starts_with(SONARR_NOT_QUALITY_UPGRADE)
                     || message.starts_with(RADARR_NOT_QUALITY_UPGRADE)
             })
         })
@@ -422,7 +422,7 @@ mod tests {
         let mut item = item(now);
         item.tracked_download_state = Some("importPending".to_owned());
         item.status_messages = vec![crate::arr::QueueStatusMessage {
-            messages: vec![SONARR_V4_NOT_CUSTOM_FORMAT_UPGRADE.to_owned()],
+            messages: vec![SONARR_NOT_CUSTOM_FORMAT_UPGRADE.to_owned()],
         }];
 
         item.tracked_download_state = Some("downloading".to_owned());
@@ -636,6 +636,10 @@ mod tests {
     async fn cancellation_stops_an_active_poll() {
         let started = Arc::new(Notify::new());
         let app = Router::new()
+            .route(
+                "/api",
+                get(|| async { Json(serde_json::json!({"current": "v3"})) }),
+            )
             .route("/api/v3/queue", get(hanging_queue))
             .with_state(started.clone());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
