@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG RUST_VERSION=1.88
+ARG RUST_VERSION
 
 FROM rust:${RUST_VERSION}-bookworm AS builder
 WORKDIR /src

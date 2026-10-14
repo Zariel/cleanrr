@@ -18,20 +18,25 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   IMAGE_NAME: ghcr.io/zariel/cleanrr
-  RUST_VERSION: 1.88.0
 
 jobs:
   verify:
     name: Verify
     runs-on: ubuntu-latest
+    outputs:
+      rust_version: ${{ steps.rust.outputs.version }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
+        id: rust
         run: |
-          rustup toolchain install "$RUST_VERSION" --profile minimal --component clippy,rustfmt
-          rustup default "$RUST_VERSION"
+          rust_version=$(sed -n 's/^rust-version = "\([^"]*\)".*/\1/p' Cargo.toml)
+          test -n "$rust_version"
+          echo "version=$rust_version" >> "$GITHUB_OUTPUT"
+          rustup toolchain install "$rust_version" --profile minimal --component clippy,rustfmt
+          rustup default "$rust_version"
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -89,6 +94,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
+            RUST_VERSION=${{ needs.verify.outputs.rust_version }}
             VERSION=${{ steps.meta.outputs.version }}
             VCS_REF=${{ github.sha }}
           cache-from: type=gha
