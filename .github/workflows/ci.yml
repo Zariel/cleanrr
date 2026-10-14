@@ -18,7 +18,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   IMAGE_NAME: ghcr.io/zariel/cleanrr
-  RUST_VERSION: 1.88.0
+  RUST_VERSION: 1.99.0
 
 jobs:
   verify:
