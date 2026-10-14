@@ -51,6 +51,19 @@ pub enum ConfigError {
     Invalid(String),
 }
 
+/// Kubernetes injects Docker-link-style variables for every Service in the
+/// pod's namespace when `enableServiceLinks` is on (the default). For a
+/// Service named `cleanrr` these keys land inside the `CLEANRR_` config
+/// prefix but are not configuration, so strict extraction skips them.
+fn is_service_link(key: &str) -> bool {
+    let key = key.trim().to_ascii_uppercase();
+    key == "PORT"
+        || key == "SERVICE_HOST"
+        || key == "SERVICE_PORT"
+        || key.starts_with("PORT_")
+        || key.starts_with("SERVICE_PORT_")
+}
+
 impl From<figment::Error> for ConfigError {
     fn from(error: figment::Error) -> Self {
         Self::Load(Box::new(error))
@@ -78,7 +91,12 @@ impl Config {
         }
 
         let config: Self = figment
-            .merge(Env::prefixed("CLEANRR_").ignore(&["CONFIG"]).split("__"))
+            .merge(
+                Env::prefixed("CLEANRR_")
+                    .ignore(&["CONFIG"])
+                    .filter(|key| !is_service_link(key.as_str()))
+                    .split("__"),
+            )
             .extract()?;
         config.validate()?;
         Ok(config)
@@ -222,6 +240,45 @@ mod tests {
             config.servers["tv"].url,
             Url::parse("https://sonarr.example/base/").unwrap()
         );
+    }
+
+    #[test]
+    #[allow(clippy::result_large_err)] // Jail::expect_with returns figment::Error
+    fn kubernetes_service_link_variables_are_ignored() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("CLEANRR_SERVICE_HOST", "10.43.210.10");
+            jail.set_env("CLEANRR_SERVICE_PORT", "8080");
+            jail.set_env("CLEANRR_SERVICE_PORT_HTTP", "8080");
+            jail.set_env("CLEANRR_PORT", "tcp://10.43.210.10:8080");
+            jail.set_env("CLEANRR_PORT_8080_TCP", "tcp://10.43.210.10:8080");
+            jail.set_env("CLEANRR_PORT_8080_TCP_PROTO", "tcp");
+            jail.set_env("CLEANRR_PORT_8080_TCP_PORT", "8080");
+            jail.set_env("CLEANRR_PORT_8080_TCP_ADDR", "10.43.210.10");
+            jail.set_env("CLEANRR_DRY_RUN", "true");
+            jail.set_env("CLEANRR_SERVERS__MOVIES__URL", "http://radarr:7878");
+            jail.set_env("CLEANRR_SERVERS__MOVIES__API_KEY", "secret");
+
+            let config = Config::load_from(PathBuf::from("cleanrr.toml"))
+                .map_err(|error| error.to_string())?;
+
+            assert!(config.dry_run);
+            assert_eq!(config.servers.len(), 1);
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[allow(clippy::result_large_err)] // Jail::expect_with returns figment::Error
+    fn unknown_environment_variables_still_fail() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("CLEANRR_FROBNICATE", "1");
+            jail.set_env("CLEANRR_SERVERS__MOVIES__URL", "http://radarr:7878");
+            jail.set_env("CLEANRR_SERVERS__MOVIES__API_KEY", "secret");
+
+            let result = Config::load_from(PathBuf::from("cleanrr.toml"));
+            assert!(result.is_err());
+            Ok(())
+        });
     }
 
     #[test]
