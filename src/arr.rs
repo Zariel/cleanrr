@@ -1,9 +1,10 @@
-use std::{collections::HashSet, time::Duration};
+use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use chrono::{DateTime, Utc};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use thiserror::Error;
+use tokio::sync::OnceCell;
 use url::Url;
 
 use crate::config::ServerConfig;
@@ -15,6 +16,12 @@ pub struct ArrClient {
     client: Client,
     base_url: Url,
     api_key: String,
+    api_base_url: Arc<OnceCell<Url>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiInfo {
+    current: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -71,6 +78,8 @@ pub enum ArrError {
     },
     #[error("queue pagination made no progress after {records} records")]
     Pagination { records: usize },
+    #[error("unsupported Arr API version: {0}")]
+    UnsupportedApiVersion(String),
 }
 
 impl ArrClient {
@@ -91,11 +100,45 @@ impl ArrClient {
             client,
             base_url,
             api_key: server.api_key.clone(),
+            api_base_url: Arc::new(OnceCell::new()),
         })
     }
 
+    async fn api_base_url(&self) -> Result<&Url, ArrError> {
+        // Queue IDs differ between API versions. Keep reads and removals on
+        // the same API for the lifetime of this client.
+        self.api_base_url
+            .get_or_try_init(|| async {
+                let response = self
+                    .client
+                    .get(self.base_url.join("api")?)
+                    .header("X-Api-Key", &self.api_key)
+                    .send()
+                    .await
+                    .map_err(|source| ArrError::Request {
+                        operation: "fetch API version",
+                        source,
+                    })?;
+
+                if !response.status().is_success() {
+                    return Err(http_error("fetch API version", response).await);
+                }
+
+                let info: ApiInfo = response.json().await.map_err(|source| ArrError::Request {
+                    operation: "decode API version",
+                    source,
+                })?;
+                if !matches!(info.current.as_str(), "v3" | "v5") {
+                    return Err(ArrError::UnsupportedApiVersion(info.current));
+                }
+
+                Ok(self.base_url.join(&format!("api/{}/", info.current))?)
+            })
+            .await
+    }
+
     pub async fn queue(&self) -> Result<Vec<QueueItem>, ArrError> {
-        let url = self.base_url.join("api/v3/queue")?;
+        let url = self.api_base_url().await?.join("queue")?;
         let mut page_number = 1usize;
         let mut items = Vec::new();
         let mut seen_ids = HashSet::new();
@@ -150,7 +193,7 @@ impl ArrClient {
         id: i64,
         remove_from_client: bool,
     ) -> Result<DeleteOutcome, ArrError> {
-        let url = self.base_url.join(&format!("api/v3/queue/{id}"))?;
+        let url = self.api_base_url().await?.join(&format!("queue/{id}"))?;
         let response = self
             .client
             .delete(url)
@@ -211,9 +254,23 @@ mod tests {
     #[derive(Clone, Default)]
     struct TestState {
         deletes: Arc<Mutex<Vec<DeleteRequest>>>,
+        api_info: Arc<Mutex<(StatusCode, Value)>>,
     }
 
-    async fn queue_handler(Query(query): Query<HashMap<String, String>>) -> Json<Value> {
+    async fn api_info_handler(
+        State(state): State<TestState>,
+        headers: HeaderMap,
+    ) -> (StatusCode, Json<Value>) {
+        assert_eq!(headers["X-Api-Key"], "test-secret");
+        let (status, info) = state.api_info.lock().await.clone();
+        (status, Json(info))
+    }
+
+    async fn queue_handler(
+        Query(query): Query<HashMap<String, String>>,
+        headers: HeaderMap,
+    ) -> Json<Value> {
+        assert_eq!(headers["X-Api-Key"], "test-secret");
         assert_eq!(query["pageSize"], PAGE_SIZE.to_string());
         assert_eq!(query["sortKey"], "added");
         assert_eq!(query["sortDirection"], "ascending");
@@ -225,6 +282,8 @@ mod tests {
         } else {
             vec![json!({
                 "id": 100,
+                "episodeIds": [10, 11],
+                "seasonNumbers": [1],
                 "title": "candidate",
                 "downloadId": "download-100",
                 "added": "2026-01-01T00:00:00Z",
@@ -253,14 +312,28 @@ mod tests {
             .unwrap()
             .to_owned();
         state.deletes.lock().await.push((id, query, key));
-        StatusCode::OK
+        if id == 404 {
+            StatusCode::NOT_FOUND
+        } else {
+            StatusCode::NO_CONTENT
+        }
     }
 
-    async fn test_client() -> (ArrClient, TestState) {
-        let state = TestState::default();
+    async fn test_client(version: &str) -> (ArrClient, TestState) {
+        let state = TestState {
+            api_info: Arc::new(Mutex::new((
+                StatusCode::OK,
+                json!({"current": version, "deprecated": []}),
+            ))),
+            ..TestState::default()
+        };
         let app = Router::new()
-            .route("/base/api/v3/queue", get(queue_handler))
-            .route("/base/api/v3/queue/{id}", delete(delete_handler))
+            .route("/base/api", get(api_info_handler))
+            .route(&format!("/base/api/{version}/queue"), get(queue_handler))
+            .route(
+                &format!("/base/api/{version}/queue/{{id}}"),
+                delete(delete_handler),
+            )
             .with_state(state.clone());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -278,35 +351,123 @@ mod tests {
 
     #[tokio::test]
     async fn paginates_queue_and_preserves_base_path() {
-        let (client, _) = test_client().await;
-        let items = client.queue().await.unwrap();
-        assert_eq!(items.len(), 101);
-        assert_eq!(items.last().unwrap().title.as_deref(), Some("candidate"));
-        assert_eq!(items.last().unwrap().status.as_deref(), Some("completed"));
-        assert_eq!(
-            items.last().unwrap().tracked_download_status.as_deref(),
-            Some("warning")
-        );
-        assert_eq!(
-            items.last().unwrap().status_messages[0].messages,
-            ["Not a Custom Format upgrade"]
-        );
+        for version in ["v3", "v5"] {
+            let (client, _) = test_client(version).await;
+            let items = client.queue().await.unwrap();
+
+            assert_eq!(items.len(), 101, "{version}");
+            let candidate = items.last().unwrap();
+            assert_eq!(candidate.id, 100);
+            assert_eq!(candidate.download_id.as_deref(), Some("download-100"));
+            assert_eq!(candidate.title.as_deref(), Some("candidate"));
+            assert_eq!(candidate.status.as_deref(), Some("completed"));
+            assert_eq!(
+                candidate.tracked_download_status.as_deref(),
+                Some("warning")
+            );
+            assert_eq!(
+                candidate.tracked_download_state.as_deref(),
+                Some("importBlocked")
+            );
+            assert_eq!(
+                candidate.added.unwrap().to_rfc3339(),
+                "2026-01-01T00:00:00+00:00"
+            );
+            assert_eq!(
+                candidate.status_messages[0].messages,
+                ["Not a Custom Format upgrade"]
+            );
+        }
     }
 
     #[tokio::test]
     async fn deletion_makes_all_safety_parameters_explicit() {
-        let (client, state) = test_client().await;
+        for version in ["v3", "v5"] {
+            for remove_from_client in [false, true] {
+                let (client, state) = test_client(version).await;
+                assert_eq!(
+                    client
+                        .delete_queue_item(42, remove_from_client)
+                        .await
+                        .unwrap(),
+                    DeleteOutcome::Removed
+                );
+
+                let deletes = state.deletes.lock().await;
+                let (id, query, key) = &deletes[0];
+                assert_eq!(*id, 42);
+                assert_eq!(key, "test-secret");
+                assert_eq!(query["removeFromClient"], remove_from_client.to_string());
+                assert_eq!(query["blocklist"], "false");
+                assert_eq!(query["skipRedownload"], "false");
+                assert_eq!(query["changeCategory"], "false");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn keeps_queue_ids_on_the_discovered_api() {
+        let (client, state) = test_client("v5").await;
+        let cloned = client.clone();
+        let items = client.queue().await.unwrap();
+        *state.api_info.lock().await = (StatusCode::OK, json!({"current": "v3"}));
+
         assert_eq!(
-            client.delete_queue_item(42, false).await.unwrap(),
+            cloned
+                .delete_queue_item(items[100].id, false)
+                .await
+                .unwrap(),
             DeleteOutcome::Removed
         );
-        let deletes = state.deletes.lock().await;
-        let (id, query, key) = &deletes[0];
-        assert_eq!(*id, 42);
-        assert_eq!(key, "test-secret");
-        assert_eq!(query["removeFromClient"], "false");
-        assert_eq!(query["blocklist"], "false");
-        assert_eq!(query["skipRedownload"], "false");
-        assert_eq!(query["changeCategory"], "false");
+        assert_eq!(client.queue().await.unwrap().len(), 101);
+    }
+
+    #[tokio::test]
+    async fn missing_queue_item_is_already_gone() {
+        for version in ["v3", "v5"] {
+            let (client, _) = test_client(version).await;
+            assert_eq!(
+                client.delete_queue_item(404, false).await.unwrap(),
+                DeleteOutcome::AlreadyGone
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn retries_failed_discovery() {
+        let (client, state) = test_client("v5").await;
+        *state.api_info.lock().await = (StatusCode::SERVICE_UNAVAILABLE, json!({}));
+
+        assert!(matches!(
+            client.queue().await,
+            Err(ArrError::Http {
+                operation: "fetch API version",
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                ..
+            })
+        ));
+
+        *state.api_info.lock().await = (StatusCode::OK, json!({"current": "v5"}));
+        assert_eq!(client.queue().await.unwrap().len(), 101);
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_discovery() {
+        let (client, state) = test_client("v5").await;
+        *state.api_info.lock().await = (StatusCode::OK, json!({}));
+        assert!(matches!(
+            client.queue().await,
+            Err(ArrError::Request {
+                operation: "decode API version",
+                ..
+            })
+        ));
+
+        *state.api_info.lock().await = (StatusCode::OK, json!({"current": "v99"}));
+        assert!(matches!(
+            client.delete_queue_item(42, false).await,
+            Err(ArrError::UnsupportedApiVersion(version)) if version == "v99"
+        ));
+        assert!(state.deletes.lock().await.is_empty());
     }
 }

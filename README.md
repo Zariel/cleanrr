@@ -1,10 +1,10 @@
 # cleanrr
 
 `cleanrr` is a small, long-running service that removes stale, blocked imports
-from Radarr and Sonarr queues. Its primary use is clearing completed downloads
-that Arr refuses to import because they are not upgrades. It is designed for
-Kubernetes and exposes health probes and Prometheus metrics from the same HTTP
-listener.
+from Radarr and Sonarr v3, v4, and v5 queues. Its primary use is clearing
+completed downloads that Arr refuses to import because they are not upgrades.
+It is designed for Kubernetes and exposes health probes and Prometheus metrics
+from the same HTTP listener.
 
 The default cleanup is deliberately conservative. It removes the item only
 from the Arr queue; it does not delete the download from the download client,
@@ -24,12 +24,14 @@ Cleanrr intentionally treats Arr's typed `importBlocked` state as the source
 of truth. Arr does not expose a structured rejection reason, so this
 convention includes all `importBlocked` items, not only non-upgrades.
 
-Sonarr v4 and Radarr have one known exception: a file rejected because it is
-not a Custom Format upgrade can remain in `importPending`. Cleanrr recognizes
-only the complete response signature: `status = completed`,
+Sonarr and Radarr have a compatibility exception: a file rejected because it
+is not a quality or Custom Format upgrade can remain in `importPending`.
+Cleanrr recognizes only the complete response signature: `status = completed`,
 `trackedDownloadStatus = warning`, `trackedDownloadState = importPending`, and
 a status message beginning `Not a Custom Format upgrade for existing episode
 file(s).` (Sonarr) or `Not a Custom Format upgrade for existing movie file(s).`
+(Radarr). It also accepts messages beginning `Not an upgrade for existing
+episode file(s).` (Sonarr) or `Not an upgrade for existing movie file.`
 (Radarr). Other `importPending` items remain untouched. Start in dry-run mode
 and confirm this policy fits your queues.
 
@@ -76,9 +78,12 @@ CLEANRR_SERVERS__MOVIES__API_KEY=secret
 This makes it possible to mount ordinary configuration in a ConfigMap and
 override API keys from Secrets. Server names are arbitrary, so multiple
 Radarr or Sonarr instances are supported. No server type is configured:
-cleanrr uses the shared Arr v3 queue API convention for every server. Remove
-the former `kind` field or `__KIND` environment variable from existing
-configurations.
+cleanrr discovers the current API version from each server's `/api` endpoint.
+It uses `/api/v3` for Radarr and Sonarr v3/v4, and `/api/v5` for Sonarr v5.
+The API version is cached until cleanrr restarts so queue reads and removals
+use the same queue IDs. Restart cleanrr after upgrading a server to a different
+API version. Remove the former `kind` field or `__KIND` environment variable
+from existing configurations.
 
 The main settings are:
 
