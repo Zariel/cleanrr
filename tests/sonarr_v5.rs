@@ -53,6 +53,8 @@ async fn remove(
     assert_eq!(query["blocklist"], "false");
     assert_eq!(query["skipRedownload"], "false");
     assert_eq!(query["changeCategory"], "false");
+    assert_eq!(query["removalMethod"], "ignore");
+    assert_eq!(query["blocklistMethod"], "doNotBlocklist");
 
     let mut records = state.records.lock().await;
     if records.remove(&id).is_none() {

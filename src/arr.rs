@@ -194,6 +194,14 @@ impl ArrClient {
         remove_from_client: bool,
     ) -> Result<DeleteOutcome, ArrError> {
         let url = self.api_base_url().await?.join(&format!("queue/{id}"))?;
+        let removal_method = if remove_from_client {
+            "removeFromClient"
+        } else {
+            "ignore"
+        };
+        // Newer Sonarr v5 builds require removalMethod and blocklistMethod.
+        // Older builds ignore them and default removeFromClient to true, so
+        // the legacy flags must still be sent.
         let response = self
             .client
             .delete(url)
@@ -203,6 +211,10 @@ impl ArrClient {
                 ("blocklist", false),
                 ("skipRedownload", false),
                 ("changeCategory", false),
+            ])
+            .query(&[
+                ("removalMethod", removal_method),
+                ("blocklistMethod", "doNotBlocklist"),
             ])
             .send()
             .await
@@ -401,6 +413,15 @@ mod tests {
                 assert_eq!(query["blocklist"], "false");
                 assert_eq!(query["skipRedownload"], "false");
                 assert_eq!(query["changeCategory"], "false");
+                assert_eq!(
+                    query["removalMethod"],
+                    if remove_from_client {
+                        "removeFromClient"
+                    } else {
+                        "ignore"
+                    }
+                );
+                assert_eq!(query["blocklistMethod"], "doNotBlocklist");
             }
         }
     }
