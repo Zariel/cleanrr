@@ -29,7 +29,9 @@ in each group:
 1. If both rows have a score, the higher Custom Format score wins.
 2. Otherwise, a higher resolution wins.
 3. Otherwise, the better source wins: Remux, then Bluray, then WEB, then HDTV.
-4. On a tie, an individual download wins over a pack, then the oldest row wins.
+4. Otherwise, the higher revision wins: REAL correction first, then the
+   PROPER/REPACK version. An omitted revision defaults to an original release.
+5. On a tie, an individual download wins over a pack, then the oldest row wins.
 
 A pack is one download that covers more than one episode, for example a season
 pack. Cleanrr keeps a pack while it is the best download for any of its

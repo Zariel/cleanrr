@@ -57,6 +57,24 @@ pub struct QueueStatusMessage {
 pub struct QueueQuality {
     #[serde(default)]
     pub quality: Quality,
+    #[serde(default)]
+    pub revision: Revision,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct Revision {
+    pub version: i32,
+    pub real: i32,
+}
+
+impl Default for Revision {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            real: 0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -423,8 +441,34 @@ mod tests {
             assert_eq!(candidate.movie_id, None);
             assert_eq!(candidate.quality.quality.name, "WEBDL-1080p");
             assert_eq!(candidate.quality.quality.resolution, Some(1080));
+            assert_eq!(candidate.quality.revision.version, 1);
+            assert_eq!(candidate.quality.revision.real, 0);
             assert_eq!(candidate.custom_format_score, Some(1775));
         }
+    }
+
+    #[test]
+    fn missing_revision_fields_default_to_an_original_release() {
+        for value in [
+            json!({"id": 1}),
+            json!({"id": 1, "quality": {}}),
+            json!({"id": 1, "quality": {"revision": {}}}),
+        ] {
+            let item: QueueItem = serde_json::from_value(value).unwrap();
+            assert_eq!(item.quality.revision, Revision::default());
+        }
+
+        let quality: QueueQuality = serde_json::from_value(json!({
+            "revision": {"real": 1}
+        }))
+        .unwrap();
+        assert_eq!(
+            quality.revision,
+            Revision {
+                version: 1,
+                real: 1
+            }
+        );
     }
 
     #[tokio::test]

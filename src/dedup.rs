@@ -97,6 +97,9 @@ fn compare_quality(a: &QueueItem, b: &QueueItem) -> Ordering {
     score
         .then_with(|| resolution(a).cmp(&resolution(b)))
         .then_with(|| source_rank(a).cmp(&source_rank(b)))
+        // Arr ranks REAL corrections ahead of PROPER/REPACK versions.
+        .then_with(|| a.quality.revision.real.cmp(&b.quality.revision.real))
+        .then_with(|| a.quality.revision.version.cmp(&b.quality.revision.version))
 }
 
 fn resolution(item: &QueueItem) -> i32 {
@@ -155,6 +158,7 @@ mod tests {
                     name: format!("WEBDL-{resolution}p"),
                     resolution: Some(resolution),
                 },
+                ..QueueQuality::default()
             },
             custom_format_score: Some(0),
         }
@@ -174,6 +178,18 @@ mod tests {
             episode_ids: episodes.to_vec(),
             ..row(id, download, resolution)
         }
+    }
+
+    fn with_revision(mut item: QueueItem, version: i32, real: i32) -> QueueItem {
+        item.quality = serde_json::from_value(serde_json::json!({
+            "quality": {
+                "name": item.quality.quality.name,
+                "resolution": item.quality.quality.resolution
+            },
+            "revision": {"version": version, "real": real, "isRepack": version > 1}
+        }))
+        .unwrap();
+        item
     }
 
     fn removed_ids(items: &[QueueItem]) -> Vec<i64> {
@@ -313,6 +329,44 @@ mod tests {
     fn full_tie_keeps_the_oldest_row() {
         let items = [v5(1, "a", &[101], 1080), v5(2, "b", &[101], 1080)];
         assert_eq!(superseded(&items), HashMap::from([(1, 0)]));
+    }
+
+    #[test]
+    fn newer_revision_wins_before_the_oldest_row_tiebreaker() {
+        for (version, real) in [(2, 0), (3, 0), (1, 1)] {
+            let original = v5(1, "original", &[101], 1080);
+            let revised = with_revision(v5(2, "revised", &[101], 1080), version, real);
+            assert_eq!(removed_ids(&[original.clone(), revised.clone()]), [1]);
+            assert_eq!(removed_ids(&[revised, original]), [1]);
+        }
+    }
+
+    #[test]
+    fn real_revision_takes_priority_over_version() {
+        let repack = with_revision(v5(1, "repack", &[101], 1080), 3, 0);
+        let real = with_revision(v5(2, "real", &[101], 1080), 1, 1);
+        assert_eq!(removed_ids(&[repack, real]), [1]);
+    }
+
+    #[test]
+    fn revised_pack_wins_before_the_individual_download_tiebreaker() {
+        let original = v5(1, "original", &[101], 1080);
+        let repack = with_revision(v5(2, "repack", &[101, 102], 1080), 2, 0);
+        assert_eq!(removed_ids(&[original, repack]), [1]);
+    }
+
+    #[test]
+    fn revision_does_not_override_quality() {
+        let repack = with_revision(v5(1, "repack", &[101], 1080), 2, 0);
+        let mut higher_score = v5(2, "higher-score", &[101], 1080);
+        higher_score.custom_format_score = Some(100);
+        let higher_resolution = v5(3, "higher-resolution", &[101], 2160);
+        let mut better_source = v5(4, "better-source", &[101], 1080);
+        better_source.quality.quality.name = "Bluray-1080p".to_owned();
+
+        for better in [higher_score, higher_resolution, better_source] {
+            assert_eq!(removed_ids(&[repack.clone(), better]), [1]);
+        }
     }
 
     #[test]
