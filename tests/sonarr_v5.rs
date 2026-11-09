@@ -78,7 +78,10 @@ async fn cleans_v5_queue() {
                 "added": old,
                 "status": "completed",
                 "trackedDownloadStatus": "warning",
-                "trackedDownloadState": "importBlocked"
+                "trackedDownloadState": "importBlocked",
+                "statusMessages": [{"messages": [
+                    "Not an upgrade for existing episode file(s). Existing quality: WEBDL-2160p. New Quality WEBDL-1080p."
+                ]}]
             }),
         ),
         (
@@ -114,7 +117,10 @@ async fn cleans_v5_queue() {
                 "added": Utc::now().to_rfc3339(),
                 "status": "completed",
                 "trackedDownloadStatus": "warning",
-                "trackedDownloadState": "importBlocked"
+                "trackedDownloadState": "importBlocked",
+                "statusMessages": [{"messages": [
+                    "Not an upgrade for existing episode file(s). Existing quality: WEBDL-2160p. New Quality WEBDL-1080p."
+                ]}]
             }),
         ),
         (
@@ -123,7 +129,56 @@ async fn cleans_v5_queue() {
                 "id": 5,
                 "status": "completed",
                 "trackedDownloadStatus": "warning",
-                "trackedDownloadState": "importBlocked"
+                "trackedDownloadState": "importBlocked",
+                "statusMessages": [{"messages": [
+                    "Not an upgrade for existing episode file(s). Existing quality: WEBDL-2160p. New Quality WEBDL-1080p."
+                ]}]
+            }),
+        ),
+        (
+            6,
+            json!({
+                "id": 6,
+                "seriesId": 2,
+                "episodeIds": [20],
+                "downloadId": "title-mismatch",
+                "added": old,
+                "status": "completed",
+                "trackedDownloadStatus": "warning",
+                "trackedDownloadState": "importBlocked",
+                "statusMessages": [{"messages": [
+                    "Found matching series via grab history, but release was matched to series by ID. Automatic import is not possible. See the FAQ for details."
+                ]}]
+            }),
+        ),
+        (
+            7,
+            json!({
+                "id": 7,
+                "seriesId": 2,
+                "episodeIds": [20],
+                "downloadId": "lower-duplicate",
+                "added": old,
+                "status": "downloading",
+                "trackedDownloadStatus": "ok",
+                "trackedDownloadState": "downloading",
+                "quality": {"quality": {"id": 3, "name": "WEBDL-1080p", "source": "web", "resolution": 1080}},
+                "customFormatScore": 0
+            }),
+        ),
+        (
+            8,
+            json!({
+                "id": 8,
+                "seriesId": 2,
+                "episodeIds": [20],
+                "downloadId": "better-duplicate",
+                "added": old,
+                "status": "downloading",
+                "trackedDownloadStatus": "ok",
+                "trackedDownloadState": "downloading",
+                "quality": {"quality": {"id": 3, "name": "WEBDL-1080p", "source": "web", "resolution": 1080}},
+                "customFormatScore": 1775
             }),
         ),
     ]);
@@ -169,5 +224,5 @@ async fn cleans_v5_queue() {
     result.expect("cleaner did not poll the v5 queue");
 
     let records = state.records.lock().await;
-    assert_eq!(records.keys().copied().collect::<Vec<_>>(), [3, 4, 5]);
+    assert_eq!(records.keys().copied().collect::<Vec<_>>(), [3, 4, 5, 6, 8]);
 }

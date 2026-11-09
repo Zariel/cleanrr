@@ -36,12 +36,34 @@ pub struct QueueItem {
     pub tracked_download_state: Option<String>,
     #[serde(default)]
     pub status_messages: Vec<QueueStatusMessage>,
+    pub movie_id: Option<i64>,
+    /// Sonarr API v3 returns one row per episode.
+    pub episode_id: Option<i64>,
+    /// Sonarr API v5 returns one row per download.
+    #[serde(default)]
+    pub episode_ids: Vec<i64>,
+    #[serde(default)]
+    pub quality: QueueQuality,
+    pub custom_format_score: Option<i32>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct QueueStatusMessage {
     #[serde(default)]
     pub messages: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct QueueQuality {
+    #[serde(default)]
+    pub quality: Quality,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct Quality {
+    #[serde(default)]
+    pub name: String,
+    pub resolution: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -305,7 +327,14 @@ mod tests {
                 "statusMessages": [{
                     "title": "candidate.mkv",
                     "messages": ["Not a Custom Format upgrade"]
-                }]
+                }],
+                "seriesId": 7,
+                "episodeId": 12,
+                "quality": {
+                    "quality": {"id": 3, "name": "WEBDL-1080p", "source": "web", "resolution": 1080},
+                    "revision": {"version": 1, "real": 0, "isRepack": false}
+                },
+                "customFormatScore": 1775
             })]
         };
         Json(json!({"totalRecords": 101, "records": records}))
@@ -389,6 +418,12 @@ mod tests {
                 candidate.status_messages[0].messages,
                 ["Not a Custom Format upgrade"]
             );
+            assert_eq!(candidate.episode_id, Some(12));
+            assert_eq!(candidate.episode_ids, [10, 11]);
+            assert_eq!(candidate.movie_id, None);
+            assert_eq!(candidate.quality.quality.name, "WEBDL-1080p");
+            assert_eq!(candidate.quality.quality.resolution, Some(1080));
+            assert_eq!(candidate.custom_format_score, Some(1775));
         }
     }
 

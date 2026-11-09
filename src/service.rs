@@ -12,6 +12,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
     arr::{ArrClient, ArrError, DeleteOutcome, QueueItem},
     config::{Config, ServerConfig},
+    dedup,
     metrics::Metrics,
 };
 
@@ -34,6 +35,16 @@ struct CandidateTracker {
     first_seen: HashMap<String, Instant>,
 }
 
+struct Candidate<'a> {
+    item: &'a QueueItem,
+    reason: Reason<'a>,
+}
+
+enum Reason<'a> {
+    NotUpgrade,
+    Superseded { kept: &'a QueueItem },
+}
+
 impl CandidateTracker {
     fn candidates<'a>(
         &mut self,
@@ -41,7 +52,7 @@ impl CandidateTracker {
         now: DateTime<Utc>,
         observed_at: Instant,
         policy: &CleanupPolicy,
-    ) -> Vec<&'a QueueItem> {
+    ) -> Vec<Candidate<'a>> {
         let active_without_timestamp = items
             .iter()
             .filter(|item| can_age_from_observation(item))
@@ -50,30 +61,33 @@ impl CandidateTracker {
         self.first_seen
             .retain(|key, _| active_without_timestamp.contains(key));
 
+        let superseded = dedup::superseded(items);
         let mut downloads = HashSet::new();
         let mut candidates = Vec::new();
-        for item in items {
-            if self.is_candidate(item, now, observed_at, policy) {
-                let key = candidate_key(item);
-                if downloads.insert(key) {
-                    candidates.push(item);
-                }
+        for (index, item) in items.iter().enumerate() {
+            let reason = if has_cleanup_state(item) {
+                Reason::NotUpgrade
+            } else if let Some(&kept) = superseded.get(&index) {
+                Reason::Superseded { kept: &items[kept] }
+            } else {
+                continue;
+            };
+            if self.is_old_enough(item, now, observed_at, policy)
+                && downloads.insert(candidate_key(item))
+            {
+                candidates.push(Candidate { item, reason });
             }
         }
         candidates
     }
 
-    fn is_candidate(
+    fn is_old_enough(
         &mut self,
         item: &QueueItem,
         now: DateTime<Utc>,
         observed_at: Instant,
         policy: &CleanupPolicy,
     ) -> bool {
-        if !has_cleanup_state(item) {
-            return false;
-        }
-
         let age = match item.added {
             Some(added) => {
                 let Ok(age) = now.signed_duration_since(added).to_std() else {
@@ -193,10 +207,24 @@ async fn poll_once(
     let candidates = candidate_tracker.candidates(&items, now, Instant::now(), policy);
     metrics.add_matches(server, candidates.len());
 
-    for item in candidates {
+    for Candidate { item, reason } in candidates {
         let title = item.title.as_deref().unwrap_or("<unknown>");
+        let (reason, kept) = match reason {
+            Reason::NotUpgrade => ("not_upgrade", None),
+            Reason::Superseded { kept } => (
+                "superseded",
+                Some(kept.title.as_deref().unwrap_or("<unknown>")),
+            ),
+        };
         if policy.dry_run {
-            info!(server, queue_id = item.id, title, "would remove queue item");
+            info!(
+                server,
+                queue_id = item.id,
+                title,
+                reason,
+                kept,
+                "would remove queue item"
+            );
             metrics.record_removal(server, "dry_run");
             continue;
         }
@@ -206,7 +234,14 @@ async fn poll_once(
             .await
         {
             Ok(DeleteOutcome::Removed) => {
-                info!(server, queue_id = item.id, title, "removed queue item");
+                info!(
+                    server,
+                    queue_id = item.id,
+                    title,
+                    reason,
+                    kept,
+                    "removed queue item"
+                );
                 metrics.record_removal(server, "removed");
             }
             Ok(DeleteOutcome::AlreadyGone) => {
@@ -246,23 +281,32 @@ fn format_error_chain(error: &(dyn Error + 'static)) -> String {
 }
 
 fn has_cleanup_state(item: &QueueItem) -> bool {
-    if item.tracked_download_state.as_deref() == Some("importBlocked") {
-        return true;
-    }
+    let blocked = item.tracked_download_state.as_deref() == Some("importBlocked")
+        // Arr can leave these rejected-import cases in importPending. Keep the
+        // compatibility match narrow because importPending is otherwise a
+        // normal transient state and must not be treated as blocked.
+        || (item.status.as_deref() == Some("completed")
+            && item.tracked_download_status.as_deref() == Some("warning")
+            && item.tracked_download_state.as_deref() == Some("importPending"));
 
-    // Arr can leave these rejected-import cases in importPending. Keep the
-    // compatibility match narrow because importPending is otherwise a
-    // normal transient state and must not be treated as blocked.
-    item.status.as_deref() == Some("completed")
-        && item.tracked_download_status.as_deref() == Some("warning")
-        && item.tracked_download_state.as_deref() == Some("importPending")
-        && item.status_messages.iter().any(|status| {
-            status.messages.iter().any(|message| {
-                message.starts_with(SONARR_NOT_CUSTOM_FORMAT_UPGRADE)
-                    || message.starts_with(RADARR_NOT_CUSTOM_FORMAT_UPGRADE)
-                    || message.starts_with(SONARR_NOT_QUALITY_UPGRADE)
-                    || message.starts_with(RADARR_NOT_QUALITY_UPGRADE)
-            })
+    blocked && is_not_upgrade_rejection(item)
+}
+
+// Every rejection must be a non-upgrade, so a release that is also blocked
+// for another reason (title mismatch, missing files) stays for manual action.
+fn is_not_upgrade_rejection(item: &QueueItem) -> bool {
+    let mut messages = item
+        .status_messages
+        .iter()
+        .flat_map(|status| &status.messages)
+        .peekable();
+
+    messages.peek().is_some()
+        && messages.all(|message| {
+            message.starts_with(SONARR_NOT_CUSTOM_FORMAT_UPGRADE)
+                || message.starts_with(RADARR_NOT_CUSTOM_FORMAT_UPGRADE)
+                || message.starts_with(SONARR_NOT_QUALITY_UPGRADE)
+                || message.starts_with(RADARR_NOT_QUALITY_UPGRADE)
         })
 }
 
@@ -273,7 +317,7 @@ fn can_age_from_observation(item: &QueueItem) -> bool {
         && item.tracked_download_status.as_deref() == Some("warning")
 }
 
-fn candidate_key(item: &QueueItem) -> String {
+pub(crate) fn candidate_key(item: &QueueItem) -> String {
     item.download_id
         .as_deref()
         .filter(|id| !id.is_empty())
@@ -309,7 +353,31 @@ mod tests {
             status: Some("completed".to_owned()),
             tracked_download_status: Some("warning".to_owned()),
             tracked_download_state: Some("importBlocked".to_owned()),
+            status_messages: vec![crate::arr::QueueStatusMessage {
+                messages: vec![
+                    "Not a Custom Format upgrade for existing episode file(s). New: [] (0) do not improve on Existing: [AMZN, WEB Tier 01] (1775)"
+                        .to_owned(),
+                ],
+            }],
+            movie_id: None,
+            episode_id: None,
+            episode_ids: Vec::new(),
+            quality: crate::arr::QueueQuality::default(),
+            custom_format_score: None,
+        }
+    }
+
+    fn downloading(now: DateTime<Utc>, id: i64, score: i32) -> QueueItem {
+        QueueItem {
+            id,
+            download_id: Some(format!("download-{id}")),
+            status: Some("downloading".to_owned()),
+            tracked_download_status: Some("ok".to_owned()),
+            tracked_download_state: Some("downloading".to_owned()),
             status_messages: Vec::new(),
+            episode_ids: vec![10],
+            custom_format_score: Some(score),
+            ..item(now)
         }
     }
 
@@ -320,6 +388,132 @@ mod tests {
         let candidates =
             CandidateTracker::default().candidates(&items, now, Instant::now(), &policy());
         assert_eq!(candidates.len(), 1);
+        assert!(matches!(candidates[0].reason, Reason::NotUpgrade));
+    }
+
+    #[test]
+    fn matches_old_superseded_duplicate_only() {
+        let now = Utc::now();
+        let items = [downloading(now, 1, 0), downloading(now, 2, 1775)];
+        let candidates =
+            CandidateTracker::default().candidates(&items, now, Instant::now(), &policy());
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].item.id, 1);
+        assert!(matches!(
+            candidates[0].reason,
+            Reason::Superseded { kept } if kept.id == 2
+        ));
+    }
+
+    #[test]
+    fn rejected_non_upgrade_does_not_supersede_a_download() {
+        let now = Utc::now();
+        let mut rejected = item(now);
+        rejected.episode_ids = vec![10];
+        rejected.custom_format_score = Some(100);
+        rejected.status_messages[0].messages = vec![
+            "Not an upgrade for existing episode file(s). Existing quality: Bluray-1080p. New Quality WEBDL-1080p."
+                .to_owned(),
+        ];
+        let items = [rejected, downloading(now, 2, 10)];
+        let candidates =
+            CandidateTracker::default().candidates(&items, now, Instant::now(), &policy());
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].item.id, 1);
+        assert!(matches!(candidates[0].reason, Reason::NotUpgrade));
+    }
+
+    #[test]
+    fn lower_duplicate_blocked_for_another_reason_stays() {
+        let now = Utc::now();
+        let mut blocked = item(now);
+        blocked.episode_ids = vec![10];
+        blocked.custom_format_score = Some(0);
+        blocked.status_messages[0].messages = vec![
+            "Found matching series via grab history, but release was matched to series by ID. Automatic import is not possible. See the FAQ for details."
+                .to_owned(),
+        ];
+        let items = [blocked, downloading(now, 2, 1775)];
+        let candidates =
+            CandidateTracker::default().candidates(&items, now, Instant::now(), &policy());
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn superseded_duplicate_waits_for_minimum_age() {
+        let now = Utc::now();
+        let mut young = downloading(now, 1, 0);
+        young.added = Some(now - TimeDelta::minutes(29));
+        let items = [young, downloading(now, 2, 1775)];
+        let candidates =
+            CandidateTracker::default().candidates(&items, now, Instant::now(), &policy());
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn superseded_duplicate_without_timestamp_is_not_removed() {
+        let now = Utc::now();
+        let mut untimed = downloading(now, 1, 0);
+        untimed.added = None;
+        let items = [untimed, downloading(now, 2, 1775)];
+        let mut tracker = CandidateTracker::default();
+        let observed_at = Instant::now();
+
+        assert!(
+            tracker
+                .candidates(&items, now, observed_at, &policy())
+                .is_empty()
+        );
+        assert!(
+            tracker
+                .candidates(
+                    &items,
+                    now + TimeDelta::hours(1),
+                    observed_at + Duration::from_secs(3600),
+                    &policy(),
+                )
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn does_not_match_blocked_import_for_other_reasons() {
+        let now = Utc::now();
+        let mut item = item(now);
+        let mut tracker = CandidateTracker::default();
+
+        item.status_messages[0].messages = vec![
+            "Found matching series via grab history, but release was matched to series by ID. Automatic import is not possible. See the FAQ for details."
+                .to_owned(),
+        ];
+        assert!(
+            tracker
+                .candidates(&[item.clone()], now, Instant::now(), &policy())
+                .is_empty()
+        );
+
+        item.status_messages.clear();
+        assert!(
+            tracker
+                .candidates(&[item], now, Instant::now(), &policy())
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn does_not_match_blocked_import_with_mixed_rejections() {
+        let now = Utc::now();
+        let mut item = item(now);
+        item.status_messages.push(crate::arr::QueueStatusMessage {
+            messages: vec!["Sample".to_owned()],
+        });
+
+        let items = [item];
+        let candidates =
+            CandidateTracker::default().candidates(&items, now, Instant::now(), &policy());
+        assert!(candidates.is_empty());
     }
 
     #[test]
@@ -473,7 +667,7 @@ mod tests {
             CandidateTracker::default().candidates(&items, now, Instant::now(), &policy());
 
         assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].id, 1);
+        assert_eq!(candidates[0].item.id, 1);
     }
 
     #[test]
