@@ -181,6 +181,28 @@ async fn cleans_v5_queue() {
                 "customFormatScore": 1775
             }),
         ),
+        (
+            9,
+            json!({
+                "id": 9,
+                "episodeIds": [30, 31],
+                "downloadId": "incomplete-pack",
+                "added": old,
+                "status": "completed",
+                "trackedDownloadStatus": "warning",
+                "trackedDownloadState": "importBlocked",
+                "statusMessages": [
+                    {
+                        "title": "One or more episodes expected in this release were not imported or missing from the release",
+                        "messages": []
+                    },
+                    {
+                        "title": "episode30.mkv",
+                        "messages": ["Not an upgrade for existing episode file(s). Existing quality: WEBDL-2160p. New Quality WEBDL-1080p."]
+                    }
+                ]
+            }),
+        ),
     ]);
     let state = QueueState {
         records: Arc::new(Mutex::new(records)),
@@ -224,5 +246,8 @@ async fn cleans_v5_queue() {
     result.expect("cleaner did not poll the v5 queue");
 
     let records = state.records.lock().await;
-    assert_eq!(records.keys().copied().collect::<Vec<_>>(), [3, 4, 5, 6, 8]);
+    assert_eq!(
+        records.keys().copied().collect::<Vec<_>>(),
+        [3, 4, 5, 6, 8, 9]
+    );
 }

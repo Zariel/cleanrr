@@ -295,18 +295,17 @@ fn has_cleanup_state(item: &QueueItem) -> bool {
 // Every rejection must be a non-upgrade, so a release that is also blocked
 // for another reason (title mismatch, missing files) stays for manual action.
 fn is_not_upgrade_rejection(item: &QueueItem) -> bool {
-    let mut messages = item
-        .status_messages
-        .iter()
-        .flat_map(|status| &status.messages)
-        .peekable();
-
-    messages.peek().is_some()
-        && messages.all(|message| {
-            message.starts_with(SONARR_NOT_CUSTOM_FORMAT_UPGRADE)
-                || message.starts_with(RADARR_NOT_CUSTOM_FORMAT_UPGRADE)
-                || message.starts_with(SONARR_NOT_QUALITY_UPGRADE)
-                || message.starts_with(RADARR_NOT_QUALITY_UPGRADE)
+    !item.status_messages.is_empty()
+        && item.status_messages.iter().all(|status| {
+            // Sonarr can report missing episodes in an entry's title alone.
+            // An entry without rejection details cannot prove a non-upgrade.
+            !status.messages.is_empty()
+                && status.messages.iter().all(|message| {
+                    message.starts_with(SONARR_NOT_CUSTOM_FORMAT_UPGRADE)
+                        || message.starts_with(RADARR_NOT_CUSTOM_FORMAT_UPGRADE)
+                        || message.starts_with(SONARR_NOT_QUALITY_UPGRADE)
+                        || message.starts_with(RADARR_NOT_QUALITY_UPGRADE)
+                })
         })
 }
 
@@ -514,6 +513,30 @@ mod tests {
         let candidates =
             CandidateTracker::default().candidates(&items, now, Instant::now(), &policy());
         assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn does_not_match_blocked_import_with_an_empty_rejection_entry() {
+        let now = Utc::now();
+        for state in ["importBlocked", "importPending"] {
+            for warning in [
+                serde_json::json!({
+                    "title": "One or more episodes expected in this release were not imported or missing from the release",
+                    "messages": []
+                }),
+                serde_json::json!({"title": "Missing episode"}),
+                serde_json::json!({}),
+            ] {
+                let mut item = item(now);
+                item.tracked_download_state = Some(state.to_owned());
+                item.status_messages
+                    .push(serde_json::from_value(warning).unwrap());
+                let items = [item];
+                let candidates =
+                    CandidateTracker::default().candidates(&items, now, Instant::now(), &policy());
+                assert!(candidates.is_empty(), "{state}");
+            }
+        }
     }
 
     #[test]

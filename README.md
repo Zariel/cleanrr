@@ -62,6 +62,8 @@ Arr does not expose a structured rejection reason, so cleanrr matches these
 message prefixes. Items blocked for any other reason, such as a series title
 mismatch, missing files, or a sample, stay in the queue for manual action. An
 item that is blocked for a non-upgrade and for another reason also stays.
+Every status-message entry must contain rejection details. An entry with no
+details, including a warning reported only in its title, prevents removal.
 
 Sonarr and Radarr have a compatibility exception: a file rejected because it
 is not a quality or Custom Format upgrade can remain in `importPending`.
