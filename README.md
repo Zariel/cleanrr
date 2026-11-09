@@ -37,10 +37,12 @@ episodes. If every episode in a pack has a better download, cleanrr removes
 the pack. Sonarr v4 (API v3) shows a pack as one row per episode with the same
 download ID. Sonarr v5 shows a pack as one row with several `episodeIds`.
 
-Cleanrr compares only rows with a download ID and
-`trackedDownloadStatus = ok`. Pending releases, blocked imports, and failed
-downloads never replace a download, and cleanrr never removes them as
-duplicates. A duplicate row without an `added` timestamp is never removed.
+Cleanrr compares only rows with a download ID, `trackedDownloadStatus = ok`,
+`status` of `queued`, `paused`, `downloading`, or `completed`, and
+`trackedDownloadState` of `downloading`, `importPending`, or `importing`.
+Pending releases, blocked imports, and failed downloads never replace a
+download, and cleanrr never removes them as duplicates. A duplicate row
+without an `added` timestamp is never removed.
 
 ### Blocked imports
 

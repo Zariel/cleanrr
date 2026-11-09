@@ -69,6 +69,14 @@ pub fn superseded(items: &[QueueItem]) -> HashMap<usize, usize> {
 fn is_healthy_download(item: &QueueItem) -> bool {
     item.download_id.as_deref().is_some_and(|id| !id.is_empty())
         && item.tracked_download_status.as_deref() == Some("ok")
+        && matches!(
+            item.status.as_deref(),
+            Some("queued" | "paused" | "downloading" | "completed")
+        )
+        && matches!(
+            item.tracked_download_state.as_deref(),
+            Some("downloading" | "importPending" | "importing")
+        )
 }
 
 fn media_keys(item: &QueueItem) -> HashSet<MediaKey> {
@@ -328,6 +336,51 @@ mod tests {
                 pack_row.tracked_download_status = Some(status.to_owned());
                 let items = [unhealthy, pack_row, v3(3, "single", 101, 1080)];
                 assert!(removed_ids(&items).is_empty(), "{status} {resolution}");
+            }
+        }
+    }
+
+    #[test]
+    fn failed_download_status_is_excluded_even_when_tracking_status_is_ok() {
+        for status in [Some("failed"), Some("warning"), Some("unknown"), None] {
+            for resolution in [720, 2160] {
+                let mut unhealthy = v5(1, "unhealthy", &[101], resolution);
+                unhealthy.status = status.map(str::to_owned);
+                let items = [unhealthy, v5(2, "healthy", &[101], 1080)];
+                assert!(removed_ids(&items).is_empty(), "{status:?} {resolution}");
+            }
+        }
+    }
+
+    #[test]
+    fn failed_tracking_state_is_excluded_even_when_tracking_status_is_ok() {
+        for state in [
+            Some("failedPending"),
+            Some("failed"),
+            Some("importBlocked"),
+            Some("imported"),
+            Some("ignored"),
+            Some("unknown"),
+            None,
+        ] {
+            for resolution in [720, 2160] {
+                let mut unhealthy = v5(1, "unhealthy", &[101], resolution);
+                unhealthy.tracked_download_state = state.map(str::to_owned);
+                let items = [unhealthy, v5(2, "healthy", &[101], 1080)];
+                assert!(removed_ids(&items).is_empty(), "{state:?} {resolution}");
+            }
+        }
+    }
+
+    #[test]
+    fn active_downloads_and_imports_can_be_deduplicated() {
+        for status in ["queued", "paused", "downloading", "completed"] {
+            for state in ["downloading", "importPending", "importing"] {
+                let mut lower = v5(1, "lower", &[101], 720);
+                lower.status = Some(status.to_owned());
+                lower.tracked_download_state = Some(state.to_owned());
+                let items = [lower, v5(2, "better", &[101], 1080)];
+                assert_eq!(removed_ids(&items), [1], "{status} {state}");
             }
         }
     }
